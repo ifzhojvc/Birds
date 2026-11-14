@@ -1,0 +1,164 @@
+name: AI Bird Lab QA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [python, web, mobile, solidity]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        if: matrix.component != 'python'
+        with:
+          node-version: '24'
+      - name: Install Python test dependencies
+        if: matrix.component == 'python'
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r ai-server/requirements-lock.txt -r requirements-test.txt
+          python -m pip check
+      - if: matrix.component == 'web'
+        run: npm --prefix web-app ci
+      - if: matrix.component == 'mobile'
+        run: npm --prefix mobile-app ci
+      - if: matrix.component == 'solidity'
+        run: npm --prefix contracts ci
+      - uses: foundry-rs/foundry-toolchain@v1
+        if: matrix.component == 'solidity'
+        with:
+          version: v1.7.1
+      - name: Test and enforce line and branch coverage
+        shell: pwsh
+        run: ./scripts/test_coverage.ps1 -Component '${{ matrix.component }}' -ReportDirectory coverage-reports/ci
+      - if: matrix.component == 'python'
+        run: python -m compileall -q app.py birdlab ai-server
+      - if: matrix.component == 'web'
+        run: npm --prefix web-app run build
+      - if: matrix.component == 'mobile'
+        working-directory: mobile-app
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+        run: |
+          npm run typecheck
+          npx expo install --check
+          npx expo export --platform ios --output-dir dist/ci-ios
+      - if: matrix.component == 'solidity'
+        working-directory: contracts
+        run: forge build
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-${{ matrix.component }}
+          path: |
+            coverage-reports/ci/
+            !coverage-reports/ci/**/tmp/**
+          retention-days: 14
+
+  dotnet-sql-rabbitmq:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Start disposable SQL Server and RabbitMQ
+        shell: bash
+        run: |
+          sql_password="Qa1!$(openssl rand -hex 20)"
+          rabbit_password="Qa1$(openssl rand -hex 20)"
+          echo "::add-mask::$sql_password"
+          echo "::add-mask::$rabbit_password"
+          MSSQL_SA_PASSWORD="$sql_password" docker run -d --name qa-sql \
+            -p 127.0.0.1:14333:1433 -e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD \
+            mcr.microsoft.com/mssql/server:2022-latest
+          RABBITMQ_DEFAULT_PASS="$rabbit_password" docker run -d --name qa-rabbit \
+            -p 127.0.0.1:5678:5672 -p 127.0.0.1:15678:15672 \
+            -e RABBITMQ_DEFAULT_USER=birdlab-ci -e RABBITMQ_DEFAULT_PASS rabbitmq:4.4.0-management
+          ready=false
+          for attempt in $(seq 1 80); do
+            if docker exec qa-sql sh -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -Q "SELECT 1"' >/dev/null 2>&1 &&
+               curl -fsS -u "birdlab-ci:$rabbit_password" http://127.0.0.1:15678/api/overview >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          {
+            printf 'BIRDLAB_TEST_SQL=Server=127.0.0.1,14333;User ID=sa;Password=%s;Encrypt=True;TrustServerCertificate=True\n' "$sql_password"
+            printf 'BIRDLAB_TEST_AMQP=amqp://birdlab-ci:%s@127.0.0.1:5678/\n' "$rabbit_password"
+            printf 'BIRDLAB_TEST_RABBIT_HTTP=http://127.0.0.1:15678\n'
+          } >> "$GITHUB_ENV"
+      - name: Test and enforce line and branch coverage with real services
+        shell: pwsh
+        run: ./scripts/test_coverage.ps1 -Component dotnet -ReportDirectory coverage-reports/ci
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-dotnet
+          path: coverage-reports/ci/
+          retention-days: 14
+
+  anvil:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: npm --prefix contracts ci
+      - run: python -m pip install pytest==8.4.2 requests==2.32.5
+      - name: Run a real test-token payment in loopback Anvil
+        shell: bash
+        run: |
+          mkdir -p coverage-reports/anvil
+          (cd contracts && forge build)
+          anvil --host 127.0.0.1 --port 18545 --chain-id 31337 --silent > coverage-reports/anvil/anvil.log 2>&1 &
+          anvil_pid=$!
+          trap 'kill "$anvil_pid"' EXIT
+          export BIRDLAB_TEST_ANVIL=http://127.0.0.1:18545
+          for attempt in $(seq 1 30); do
+            if cast chain-id --rpc-url "$BIRDLAB_TEST_ANVIL" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          python -m pytest -q integration-tests/test_anvil.py --junitxml=coverage-reports/anvil/tests.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: integration-anvil
+          path: coverage-reports/anvil/
+          retention-days: 14
