@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -36,6 +37,13 @@ def test_actual_contract_records_local_payment_once(tmp_path):
     assert int(events[0]["data"][2:66], 16) == price
     assert events[0]["data"][-40:].lower() == token[2:].lower()
     repeat = chain.send(payer, contract, purchase)
-    assert int(chain.rpc("eth_getTransactionReceipt", [repeat])["status"], 16) == 0
+    deadline = time.monotonic() + 10
+    repeat_receipt = None
+    while repeat_receipt is None and time.monotonic() < deadline:
+        repeat_receipt = chain.rpc("eth_getTransactionReceipt", [repeat])
+        if repeat_receipt is None:
+            time.sleep(0.1)
+    assert repeat_receipt is not None, "Repeat transaction was not mined."
+    assert int(repeat_receipt["status"], 16) == 0
     assert int(read("balanceOf(address)", payer), 16) == before - price
     assert int(read("balanceOf(address)", contract), 16) == price
