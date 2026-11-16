@@ -30,6 +30,11 @@ export interface Entitlement {
   endDate: string;
   subscriptionId: string | null;
 }
+export interface PaymentReadiness {
+  ready: boolean;
+  state: string;
+  message: string;
+}
 export interface Network {
   enabled: boolean;
   testMode: boolean;

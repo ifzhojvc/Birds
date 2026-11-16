@@ -8,19 +8,42 @@ using Microsoft.Extensions.Options;
 
 namespace BirdLab.Api.Subscriptions;
 
+public sealed record PaymentReadiness(bool Ready, string State, string Message);
+
 public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier blockchain, IOptions<BlockchainOptions> settings)
 {
     [GeneratedRegex("^0x[0-9a-fA-F]{64}$")]
     private static partial Regex HashPattern();
 
+    private async Task CheckHistoryAsync(CancellationToken token)
+    {
+        if (settings.Value.ChainId != 31337) return;
+        var history = await db.CryptoPayments.AsNoTracking().Where(p => p.ChainId == 31337 && p.ConfirmedAt != null).ToArrayAsync(token);
+        await blockchain.CheckHistoryAsync(history, token);
+    }
+
+    public async Task<PaymentReadiness> ReadinessAsync(CancellationToken token)
+    {
+        try
+        {
+            settings.Value.ResolveContracts().RequirePayments();
+            var plans = await db.SubscriptionPlans.AsNoTracking().Where(p => p.IsActive && p.Price > 0).ToArrayAsync(token);
+            foreach (var plan in plans) await blockchain.CheckConfigurationAsync(plan.Id, plan.Price, token);
+            await CheckHistoryAsync(token);
+            return new(true, "ready", "Платіжна інфраструктура готова.");
+        }
+        catch (ApiException error) { return new(false, error.Code ?? "configuration_invalid", error.Message); }
+        catch (Exception) when (!token.IsCancellationRequested) { return new(false, "rpc_unavailable", "Не вдалося перевірити локальну платіжну мережу. Спробуйте пізніше; аналіз птахів доступний."); }
+    }
+
     public async Task<PaymentOrder> CreateAsync(string userId, int planId, string walletAddress, bool replaceCurrentPlan, CancellationToken token)
     {
-        var config = settings.Value;
+        var config = settings.Value.ResolveContracts();
         config.RequirePayments();
         var wallet = WalletService.Address(walletAddress);
         if (!await db.UserWallets.AnyAsync(w => w.UserId == userId && w.WalletAddress == wallet && w.IsVerified, token)) throw new ApiException(403, "Спочатку підтвердіть володіння гаманцем.");
         var plan = await db.SubscriptionPlans.AsNoTracking().SingleOrDefaultAsync(p => p.Id == planId && p.IsActive && p.Price > 0, token) ?? throw new ApiException(400, "Оберіть активний платний тариф.");
-        try { await blockchain.CheckConfigurationAsync(plan.Id, plan.Price, token); }
+        try { await blockchain.CheckConfigurationAsync(plan.Id, plan.Price, token); await CheckHistoryAsync(token); }
         catch (ApiException) { throw; }
         catch (Exception) when (!token.IsCancellationRequested) { throw new ApiException(503, "Не вдалося перевірити платіжний контракт через RPC. Спробуйте пізніше."); }
         await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
@@ -90,7 +113,8 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
         var snapshot = await db.CryptoPayments.AsNoTracking().SingleAsync(p => p.Id == paymentId, token);
         var orderSnapshot = await db.PaymentOrders.AsNoTracking().SingleAsync(o => o.Id == snapshot.PaymentOrderId, token);
         PaymentEvidence evidence;
-        try { evidence = await blockchain.VerifyAsync(orderSnapshot, snapshot.TransactionHash, token); }
+        try { await CheckHistoryAsync(token); evidence = await blockchain.VerifyAsync(orderSnapshot, snapshot.TransactionHash, token); }
+        catch (ApiException error) { evidence = new("RpcUnavailable", error.Message); }
         catch (Exception) when (!token.IsCancellationRequested) { evidence = new("RpcUnavailable", "RPC тимчасово недоступний. Перевірка повториться автоматично."); }
         await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
         await UserLock.AcquireAsync(db, snapshot.UserId, token);

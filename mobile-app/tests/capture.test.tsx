@@ -103,6 +103,34 @@ it("uploads one photo, pauses polling in background and resumes without another 
   expect(remove).toHaveBeenCalled();
 });
 
+it("keeps tracking an accepted photo when saving its task ID fails", async () => {
+  const save = jest.spyOn(File.prototype, "writeSync").mockImplementationOnce(() => {
+    throw new Error("Device storage unavailable");
+  });
+  let complete: ((value: Response) => void) | undefined;
+  const request = mockHttp((url) => {
+    if (url.pathname === "/api/analysis/image") return json(task, 202);
+    if (url.pathname === task.statusUrl) return new Promise<Response>((resolve) => {
+      complete = resolve;
+    });
+  });
+  await signedIn();
+  press("Аналізувати фото");
+  pickPhoto();
+  await screen.findByLabelText("Вибране фото");
+  press("Проаналізувати фото");
+  expect(await screen.findByRole("alert")).toHaveTextContent(/ID не вдалося зберегти на пристрої/);
+  expect(screen.getByText(`Завдання ${task.analysisId}`)).toBeOnTheScreen();
+  expect(save).toHaveBeenCalledWith(JSON.stringify({ base: "http://birdlab.test:5100", task }));
+  expect(new File(Paths.document, "bird-task-image.json").exists).toBe(false);
+  await waitFor(() => expect(complete).toBeDefined());
+  await act(async () => {
+    complete?.(json(state("Completed", { result: photo })));
+  });
+  expect(await screen.findByText("3. Mallard")).toBeOnTheScreen();
+  expect(request.mock.calls.filter(([url]) => String(url).includes("/api/analysis/image"))).toHaveLength(1);
+});
+
 it("aborts an in-flight upload on unmount", async () => {
   let uploadSignal: AbortSignal | null = null;
   mockHttp((url, init) => {
@@ -123,7 +151,7 @@ it("aborts an in-flight upload on unmount", async () => {
 });
 
 it("restores a saved task and shows both delayed and terminal worker states", async () => {
-  new File(Paths.document, "bird-task-image.json").write(JSON.stringify({ base: "http://birdlab.test:5100", task }));
+  new File(Paths.document, "bird-task-image.json").writeSync(JSON.stringify({ base: "http://birdlab.test:5100", task }));
   let polls = 0;
   const request = mockHttp((url) => {
     if (url.pathname === task.statusUrl) return ++polls === 1
@@ -179,4 +207,23 @@ it("honors microphone permission and closes recording mode after stopping", asyn
   press("Зупинити · 1 с");
   expect(await screen.findByRole("button", { name: "Проаналізувати аудіо" })).toBeEnabled();
   expect(setAudioModeAsync).toHaveBeenCalledWith({ allowsRecording: false, playsInSilentMode: true });
+});
+
+it.each([
+  ["image", "На зображенні не вдалося виявити птаха. Спробуйте завантажити іншу фотографію."],
+  ["image", "Не вдалося впевнено визначити, чи є на фото птах. Спробуйте чіткіше зображення."],
+  ["audio", "На аудіозаписі не вдалося виявити звуків птахів. Завантажте інший запис."],
+  ["audio", "Не вдалося впевнено визначити наявність голосу птаха. Спробуйте якісніший запис."],
+  ["audio", "Звуки птаха виявлено, але визначити вид із достатньою впевненістю не вдалося."],
+] as const)("shows a terminal %s content rejection without a species result: %s", async (kind, message) => {
+  new File(Paths.document, `bird-task-${kind}.json`).writeSync(JSON.stringify({ base: "http://birdlab.test:5100", task }));
+  const request = mockHttp((url) => {
+    if (url.pathname === task.statusUrl) return json(state("Failed", { analysisType: kind, errorMessage: message }));
+  });
+  await signedIn();
+  press(kind === "image" ? "Аналізувати фото" : "Розпізнати голос");
+  expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  expect(screen.queryByText("3. Mallard")).toBeNull();
+  expect(screen.queryByText("Відкрити результат в історії")).toBeNull();
+  expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });

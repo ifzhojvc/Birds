@@ -129,7 +129,7 @@ export default function HistoryScreen({
                 onPress={() => setPage((p) => p + 1)}
               />
             </View>
-          ) : null
+          ) : undefined
         }
       />
     </Screen>

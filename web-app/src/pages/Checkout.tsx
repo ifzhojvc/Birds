@@ -24,6 +24,7 @@ import {
   type CryptoPayment,
   type Network,
   type PaymentOrder,
+  type PaymentReadiness,
   type Plan,
 } from "../../../shared/subscriptions";
 
@@ -167,6 +168,15 @@ export default function Checkout() {
     } finally {
       setBusy("");
     }
+  }
+  async function requireReady(expected?: PaymentOrder) {
+    const readiness = await api.request<PaymentReadiness>("/subscriptions/readiness");
+    if (!readiness.ready) throw new Error(readiness.message);
+    const latest = await api.request<Network>("/subscriptions/network");
+    if (chainId !== latest.chainId) throw new Error("Мережа гаманця не відповідає готовій платіжній мережі.");
+    if (expected && (expected.chainId !== latest.chainId || expected.tokenContractAddress.toLowerCase() !== latest.tokenAddress.toLowerCase() || expected.paymentContractAddress.toLowerCase() !== latest.paymentContractAddress.toLowerCase()))
+      throw new Error("Замовлення належить іншій конфігурації мережі. Перевірте історію платежів перед новою оплатою.");
+    cache.setQueryData(["/subscriptions/network"], latest);
   }
   async function connect(choice: WalletChoice) {
     if (!network) return;
@@ -414,6 +424,7 @@ export default function Checkout() {
                     }
                     onClick={() =>
                       void action("Створення замовлення…", async () => {
+                        await requireReady();
                         const response = await api.request<PaymentOrder>(
                           "/subscriptions/orders",
                           {
@@ -458,6 +469,7 @@ export default function Checkout() {
                         }
                         onClick={() =>
                           void action("Підтвердження дозволу…", async () => {
+                            await requireReady(order);
                             await approveOrder(
                               selected!.provider,
                               network,
@@ -512,6 +524,7 @@ export default function Checkout() {
                           void action(
                             "Підтвердіть платіж у гаманці…",
                             async () => {
+                              await requireReady(order);
                               const hash = await payOrder(
                                 selected!.provider,
                                 network,

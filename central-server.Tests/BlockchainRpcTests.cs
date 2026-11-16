@@ -13,12 +13,14 @@ using Xunit;
 
 namespace BirdLab.Api.Tests;
 
-public sealed class BlockchainRpcTests
+public sealed partial class BlockchainRpcTests
 {
     private static string Hex(string digits) => "0x" + digits;
     private static string Word(string digits) => digits.PadLeft(64, '0');
     private static string Selector(string signature) => Hex(new Sha3Keccack().CalculateHash(signature)[..8]);
     private static string Hash(char ch) => Hex(new string(ch, 64));
+
+    private sealed record RpcFailure(int Code, string Message);
 
     private sealed class Rpc : IAsyncDisposable
     {
@@ -38,7 +40,9 @@ public sealed class BlockchainRpcTests
                 var json = body.RootElement;
                 var method = json.GetProperty("method").GetString()!;
                 var parameters = json.TryGetProperty("params", out var value) ? value : default;
-                return Results.Json(new { jsonrpc = "2.0", id = json.GetProperty("id").Clone(), result = respond(method, parameters) });
+                var result = respond(method, parameters);
+                if (result is RpcFailure failure) return Results.Json(new { jsonrpc = "2.0", id = json.GetProperty("id").Clone(), error = new { code = failure.Code, message = failure.Message } });
+                return Results.Json(new { jsonrpc = "2.0", id = json.GetProperty("id").Clone(), result });
             });
             await app.StartAsync();
             return new(app);
@@ -57,7 +61,8 @@ public sealed class BlockchainRpcTests
     [InlineData("paused", "Ціна, токен")]
     public async Task VerifiesConfiguredPaymentTermsThroughJsonRpc(string scenario, string error)
     {
-        var config = SubscriptionTests.Options();
+        using var local = new LocalFiles();
+        var config = local.Config;
         var selectors = new Dictionary<string, string>
         {
             [Selector("paymentToken()")] = Hex(Word(scenario == "token" ? new string('f', 40) : config.TokenAddress[2..])),
@@ -65,12 +70,16 @@ public sealed class BlockchainRpcTests
             [Selector("paused()")] = Hex(Word(scenario == "paused" ? "1" : "0")),
             [Selector("decimals()")] = Hex(Word(scenario == "decimals" ? "18" : "6")),
         };
-        await using var rpc = await Rpc.StartAsync((method, parameters) => method switch
+        await using var rpc = await Rpc.StartAsync((method, parameters) =>
+        {
+            if (method is "eth_getBlockByNumber" or "eth_getTransactionByHash" or "eth_getTransactionReceipt" || method == "eth_call" && parameters[0].GetProperty("data").GetString() == Selector("owner()")) return local.Respond("valid", method, parameters);
+            return method switch
         {
             "eth_chainId" => scenario == "chain" ? "0x1" : "0x7a69",
             "eth_getCode" => scenario == "missing-contract" ? "0x" : "0x1234",
             "eth_call" => selectors[parameters[0].GetProperty("data").GetString()!.ToLowerInvariant()],
             _ => throw new InvalidOperationException(method)
+        };
         });
         config.RpcUrl = rpc.Url;
         var verifier = new BlockchainVerifier(Options.Create(config));
@@ -112,7 +121,8 @@ public sealed class BlockchainRpcTests
     [InlineData("wrong-token", "Rejected")]
     public async Task VerifiesReceiptAgainstTheExactOrderAndCanonicalChain(string scenario, string expected)
     {
-        var config = SubscriptionTests.Options();
+        using var local = new LocalFiles();
+        var config = local.Config;
         var timestamp = DateTimeOffset.Parse("2026-10-30T12:00:00Z");
         var wallet = "0x3333333333333333333333333333333333333333";
         var other = "0x4444444444444444444444444444444444444444";
@@ -157,8 +167,9 @@ public sealed class BlockchainRpcTests
         };
         var mined = scenario == "early" ? timestamp.AddMinutes(-3) : scenario == "expired" ? timestamp.AddMinutes(3) : timestamp;
         var methods = new System.Collections.Concurrent.ConcurrentQueue<string>();
-        await using var rpc = await Rpc.StartAsync((method, _) =>
+        await using var rpc = await Rpc.StartAsync((method, parameters) =>
         {
+            if (method is "eth_getCode" or "eth_call" || method == "eth_getTransactionReceipt" && parameters[0].GetString() is var deploymentHash && (deploymentHash == Hash('7') || deploymentHash == Hash('8') || deploymentHash == Hash('9')) || method == "eth_getTransactionByHash" && parameters[0].GetString() == Hash('9') || method == "eth_getBlockByNumber" && parameters[0].GetString() is "0x1" or "0x2" or "0x3") return local.Respond("valid", method, parameters);
             methods.Enqueue(method);
             return method switch
             {

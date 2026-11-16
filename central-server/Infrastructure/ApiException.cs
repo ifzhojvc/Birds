@@ -6,9 +6,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace BirdLab.Api.Infrastructure;
 
-public sealed class ApiException(int status, string message) : Exception(message)
+public sealed class ApiException(int status, string message, string? code = null) : Exception(message)
 {
     public int Status { get; } = status;
+    public string? Code { get; } = code;
 }
 
 public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : IExceptionHandler

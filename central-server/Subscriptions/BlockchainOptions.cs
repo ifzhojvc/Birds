@@ -13,12 +13,23 @@ public sealed class BlockchainOptions
     public string TokenAddress { get; set; } = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
     public int TokenDecimals { get; set; } = 6;
     public string PaymentContractAddress { get; set; } = "";
+    public string LocalDeploymentPath { get; set; } = "";
     public int Confirmations { get; set; } = 12;
     public int PollSeconds { get; set; } = 15;
     public int OrderMinutes { get; set; } = 30;
     public string SiweDomain { get; set; } = "localhost:5173";
     public string SiweUri { get; set; } = "http://localhost:5173";
     public string ExplorerUrl => ChainId == 84532 ? "https://sepolia.basescan.org" : "";
+
+    public BlockchainOptions WithContracts(string token, string payment)
+    {
+        var copy = (BlockchainOptions)MemberwiseClone();
+        copy.TokenAddress = token;
+        copy.PaymentContractAddress = payment;
+        return copy;
+    }
+
+    public BlockchainOptions ResolveContracts() => ChainId == 31337 && !string.IsNullOrWhiteSpace(LocalDeploymentPath) ? LocalDeployment.Read(this).Resolve(this) : this;
 
     public void ValidateNetwork()
     {

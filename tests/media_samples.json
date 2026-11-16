@@ -1,0 +1,79 @@
+[
+  {
+    "name": "cat.jpg",
+    "kind": "image",
+    "bird": false,
+    "url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/25/Siam_lilacpoint.jpg/960px-Siam_lilacpoint.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Siam_lilacpoint.jpg",
+    "license": "CC BY-SA 3.0",
+    "license_url": "http://creativecommons.org/licenses/by-sa/3.0/",
+    "author": "Karin Langner-Bahmann, upload von Martin Bahmann",
+    "sha256": "df7fbce2444089023240247d2c5586897ff3628b200a20c325898c6ef2d5f9c9"
+  },
+  {
+    "name": "dog.jpg",
+    "kind": "image",
+    "bird": false,
+    "url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7a/Huskiesatrest.jpg/960px-Huskiesatrest.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Huskiesatrest.jpg",
+    "license": "CC BY 2.0",
+    "license_url": "https://creativecommons.org/licenses/by/2.0",
+    "author": "M. Rehemtulla",
+    "sha256": "d0ddf5dd13b9668063888c9c92e1350f129f150933d2a47c21f14f9f8bf74732"
+  },
+  {
+    "name": "human.jpg",
+    "kind": "image",
+    "bird": false,
+    "url": "https://upload.wikimedia.org/wikipedia/commons/6/68/Akha_cropped_hires.JPG",
+    "source": "https://commons.wikimedia.org/wiki/File:Akha_cropped_hires.JPG",
+    "license": "CC BY-SA 2.0 de",
+    "license_url": "https://creativecommons.org/licenses/by-sa/2.0/de/deed.en",
+    "author": "Weltenbummler84",
+    "sha256": "21277720559215f8dc627a3e3d46bc7bf38045db5c3d0c3b36f86f35829fb9fe"
+  },
+  {
+    "name": "car.jpg",
+    "kind": "image",
+    "bird": false,
+    "url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/b4/White_Toyota_Corolla_sedan_in_San_Jose_California_dllu.jpg/960px-White_Toyota_Corolla_sedan_in_San_Jose_California_dllu.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:White_Toyota_Corolla_sedan_in_San_Jose_California_dllu.jpg",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "author": "Daniel Lu (User:dllu)",
+    "sha256": "49446f874520d04bb780d0193be815d67798521e7cd59bc55db813be409fc6ec"
+  },
+  {
+    "name": "speech.ogg",
+    "kind": "audio",
+    "bird": false,
+    "url": "https://librosa.org/data/audio/5703-47212-0000.ogg",
+    "source": "https://www.openslr.org/12/",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "author": "LibriSpeech / Garth Comira",
+    "sha256": "a284612b46af0535f7e1873758c4387bb8369f6dbbe192ffdec1f171108f98dd"
+  },
+  {
+    "name": "music.ogg",
+    "kind": "audio",
+    "bird": false,
+    "url": "https://librosa.org/data/audio/Kevin_MacLeod_-_Vibe_Ace.ogg",
+    "source": "https://freemusicarchive.org/music/Kevin_MacLeod/Jazz_Sampler/Vibe_Ace",
+    "license": "CC BY 3.0",
+    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+    "author": "Kevin MacLeod",
+    "sha256": "6c23aed3dd5aa57f2b1652ecab68d15d9b82ad257f54e639eb2880ca09bc118a"
+  },
+  {
+    "name": "bark.wav",
+    "kind": "audio",
+    "bird": false,
+    "url": "https://raw.githubusercontent.com/karolpiczak/ESC-50/master/audio/1-100032-A-0.wav",
+    "source": "https://freesound.org/people/nfrae/sounds/100032/",
+    "license": "CC BY 3.0 (ESC-10), original CC0",
+    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+    "author": "nfrae / Karol J. Piczak (ESC-10)",
+    "sha256": "f40a849a2375c8c63312a73dd2dd6c74007301fcc21b4be2ece29a642831e3d8"
+  }
+]

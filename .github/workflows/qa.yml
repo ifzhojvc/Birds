@@ -156,6 +156,8 @@ jobs:
             sleep 1
           done
           python -m pytest -q integration-tests/test_anvil.py --junitxml=coverage-reports/anvil/tests.xml
+      - name: Verify persistent Anvil and idempotent container initialization
+        run: python -m pytest -q integration-tests/test_anvil_persistence.py --junitxml=coverage-reports/anvil/persistence.xml
       - uses: actions/upload-artifact@v7
         if: always()
         with:

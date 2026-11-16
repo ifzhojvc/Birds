@@ -77,6 +77,11 @@ def test_real_fastapi_image_and_audio(client):
     root = Path(__file__).resolve().parents[1]
     for kind, path in [("image", root / "sample_images" / "01_Cardinalis_cardinalis.jpg"), ("audio", root / "sample_audio" / "robin.wav")]:
         response = client.post(f"/predict/{kind}", files={"file": (path.name, path.read_bytes())})
+        if kind == "audio":
+            assert response.status_code == 422, response.text
+            assert response.json()["code"] == "bird_species_uncertain"
+            assert "predictions" not in response.json()
+            continue
         assert response.status_code == 200, response.text
         payload = response.json()
         assert len(payload["predictions"]) == 3

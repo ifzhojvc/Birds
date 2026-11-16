@@ -104,7 +104,7 @@ def main():
         if not shutil.which(command):
             parser.error(f"{command} is required.")
     args.docker = True
-    args.rpc = "http://127.0.0.1:8545"
+    args.rpc = "http://127.0.0.1:18545"
     args.skip_ai = False
     args.keep_services = False
     QaProtocol(args).run()

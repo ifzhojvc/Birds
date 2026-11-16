@@ -33,7 +33,7 @@ jest.mock("expo-file-system", () => {
     constructor(directory, name) { this.uri = directory + "/" + name; }
     get exists() { return files.has(this.uri); }
     textSync() { return files.get(this.uri); }
-    write(text) { files.set(this.uri, text); }
+    writeSync(text) { files.set(this.uri, text); }
     delete() { files.delete(this.uri); }
   }
   return { File, Paths: { document: "file:///documents", cache: "file:///cache" } };

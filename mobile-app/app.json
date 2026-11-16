@@ -27,7 +27,11 @@
           "microphonePermission": "Запишіть голос птаха."
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-asset",
+      "expo-font",
+      "expo-sharing",
+      "expo-status-bar"
     ],
     "assetBundlePatterns": [
       "**/*"

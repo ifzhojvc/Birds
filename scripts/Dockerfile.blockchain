@@ -1,0 +1,15 @@
+FROM node:24-bookworm-slim AS dependencies
+WORKDIR /app/contracts
+COPY contracts/package*.json ./
+RUN npm ci --ignore-scripts
+
+FROM ghcr.io/foundry-rs/foundry:v1.7.1
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-requests ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=dependencies /app/contracts/node_modules ./contracts/node_modules
+COPY contracts/foundry.toml ./contracts/
+COPY contracts/src ./contracts/src
+RUN cd contracts && forge build
+COPY scripts/local_blockchain.py ./scripts/local_blockchain.py
+ENTRYPOINT ["python3", "scripts/local_blockchain.py"]

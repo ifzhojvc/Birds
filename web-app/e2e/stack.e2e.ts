@@ -44,3 +44,37 @@ test("real photo travels from React through RabbitMQ and Hugging Face to SQL his
     contentType: "application/json",
   });
 });
+
+test("a real non-bird photo fails in React without a species or a consumed quota unit", async ({ page }) => {
+  await page.goto("/photo");
+  await page.getByRole("button", { name: "Створити новий обліковий запис" }).click();
+  await page.getByLabel("Електронна пошта").fill("browser-content-qa-" + randomUUID() + "@example.test");
+  await page.getByLabel("Пароль").fill("BirdQA!" + randomUUID());
+  await page.getByRole("button", { name: "Зареєструватися" }).click();
+  await expect(page.getByRole("heading", { name: "Птах у фокусі" })).toBeVisible();
+  const encoded = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 256;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "black";
+    context.fillRect(0, 0, 256, 256);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  await page.getByLabel("Обрати файли").setInputFiles({ name: "empty.png", mimeType: "image/png", buffer: Buffer.from(encoded, "base64") });
+  const accepted = page.waitForResponse(response => new URL(response.url()).pathname === "/api/analysis/image" && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Розпочати аналіз" }).click();
+  const response = await accepted;
+  expect(response.status()).toBe(202);
+  const api = new URL(response.url()).origin;
+  const task = page.getByTestId("analysis-task");
+  await expect(task).toHaveAttribute("data-status", "Failed", { timeout: 180_000 });
+  await expect(task).toContainText("На зображенні не вдалося виявити птаха. Спробуйте завантажити іншу фотографію.");
+  await expect(task.locator(".rank")).toHaveCount(0);
+  const usage = await page.request.get(api + "/api/subscriptions/usage");
+  expect((await usage.json()).remaining).toBe(5);
+  const history = await page.request.get(api + "/api/analyses");
+  expect((await history.json()).total).toBe(0);
+  await page.reload();
+  await expect(task).toHaveAttribute("data-status", "Failed");
+  await expect(task.locator(".rank")).toHaveCount(0);
+});

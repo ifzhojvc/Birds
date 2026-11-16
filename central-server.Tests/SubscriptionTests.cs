@@ -13,8 +13,11 @@ namespace BirdLab.Api.Tests;
 
 public sealed class FakeBlockchain : IBlockchainVerifier
 {
+    public Exception? ConfigurationError { get; set; }
+    public Exception? HistoryError { get; set; }
+    public Task CheckHistoryAsync(IReadOnlyCollection<CryptoPayment> history, CancellationToken token) => HistoryError is null ? Task.CompletedTask : Task.FromException(HistoryError);
     public PaymentEvidence Evidence { get; set; } = new("Confirmed", null, 10, "0x" + new string('b', 64), 1);
-    public Task CheckConfigurationAsync(int planId, long price, CancellationToken token) => Task.CompletedTask;
+    public Task CheckConfigurationAsync(int planId, long price, CancellationToken token) => ConfigurationError is null ? Task.CompletedTask : Task.FromException(ConfigurationError);
     public Task<PaymentEvidence> VerifyAsync(PaymentOrder order, string hash, CancellationToken token) => Task.FromResult(Evidence);
 }
 

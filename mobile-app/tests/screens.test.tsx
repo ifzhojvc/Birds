@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react-native";
-import { Alert, Linking } from "react-native";
+import { Alert, FlatList, Linking } from "react-native";
 import { File } from "expo-file-system";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import * as Sharing from "expo-sharing";
@@ -44,6 +44,36 @@ it("navigates from home to history, filters and pages without dropping bearer au
   jest.mocked(useAudioPlayerStatus).mockReturnValue({ playing: false, didJustFinish: true, currentTime: 1, duration: 1 } as never);
   press("Відтворити запис");
   expect(player.play).toHaveBeenCalled();
+});
+
+it("recovers history pagination after a failed load and refreshes with bearer authentication", async () => {
+  let loads = 0;
+  const request = mockHttp((url) => {
+    if (url.pathname === "/api/analyses" && url.searchParams.has("page")) {
+      loads++;
+      if (loads === 1) return json({ detail: "Історія тимчасово недоступна" }, 503);
+      return json(loads === 2 ? page([photo], 16) : page([audio]));
+    }
+  });
+  await signedIn();
+  press("Усі");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Історія тимчасово недоступна");
+  expect(screen.queryByRole("button", { name: "Назад" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Далі" })).toBeNull();
+  press("Спробувати ще раз");
+  expect(await screen.findByText("Знайдено: 16 · Сторінка 1")).toBeOnTheScreen();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: "Назад" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Далі" })).toBeEnabled();
+  fireEvent(screen.UNSAFE_getByType(FlatList), "refresh");
+  expect(await screen.findByText("Знайдено: 1 · Сторінка 1")).toBeOnTheScreen();
+  expect((await screen.findAllByText(audio.predictedSpecies))[0]).toBeOnTheScreen();
+  expect(screen.getByRole("button", { name: "Далі" })).toBeDisabled();
+  const historyRequests = request.mock.calls.filter(([url]) => String(url).includes("/api/analyses?page="));
+  expect(historyRequests).toHaveLength(3);
+  for (const [, init] of historyRequests) {
+    expect(init?.headers).toEqual({ Authorization: "Bearer " + token });
+  }
 });
 
 it("handles gallery details, reference links and a confirmed delete after a recoverable failure", async () => {

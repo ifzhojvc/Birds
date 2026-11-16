@@ -7,6 +7,7 @@ using Nethereum.Contracts;
 using Nethereum.RPC.Eth.DTOs;
 using Nethereum.Util;
 using Nethereum.Web3;
+using Nethereum.Hex.HexTypes;
 
 namespace BirdLab.Api.Subscriptions;
 
@@ -27,42 +28,98 @@ public sealed class PriceFunction : FunctionMessage
 [Function("paymentToken", "address")] public sealed class TokenFunction : FunctionMessage;
 [Function("decimals", "uint8")] public sealed class DecimalsFunction : FunctionMessage;
 [Function("paused", "bool")] public sealed class PausedFunction : FunctionMessage;
+[Function("owner", "address")] public sealed class OwnerFunction : FunctionMessage;
 
 public sealed record PaymentEvidence(string State, string? Error = null, long? BlockNumber = null, string? BlockHash = null, int? LogIndex = null);
 public interface IBlockchainVerifier
 {
     Task CheckConfigurationAsync(int planId, long price, CancellationToken token);
+    Task CheckHistoryAsync(IReadOnlyCollection<CryptoPayment> history, CancellationToken token);
     Task<PaymentEvidence> VerifyAsync(PaymentOrder order, string transactionHash, CancellationToken token);
 }
 
 public sealed class BlockchainVerifier(IOptions<BlockchainOptions> settings) : IBlockchainVerifier
 {
-    private BlockchainOptions Config => settings.Value;
+    private (BlockchainOptions Config, LocalDeployment? Deployment) Configuration()
+    {
+        var config = settings.Value;
+        var deployment = config.ChainId == 31337 ? LocalDeployment.Read(config) : null;
+        config = deployment?.Resolve(config) ?? config;
+        config.RequirePayments();
+        return (config, deployment);
+    }
     private static Task<T> Rpc<T>(Task<T> task, CancellationToken token) => task.WaitAsync(TimeSpan.FromSeconds(12), token);
     private static bool Same(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
+    private static ApiException HistoryMismatch() => new(503, "Історія локального Anvil не збігається зі збереженими платежами. Платежі зупинено; чинні підписки збережено. Відновіть попередній стан мережі.", "history_mismatch");
+
+    private static ApiException ContractMismatch() => new(503, "Контракти Anvil не відповідають перевіреному розгортанню. Платежі зупинено.", "contract_mismatch");
+
+    private static async Task CheckLocalAsync(Web3 web3, LocalDeployment deployment, string tokenCode, string paymentCode, CancellationToken token)
+    {
+        if (!Same(LocalDeployment.CodeHash(tokenCode), deployment.TokenRuntimeCodeHash) || !Same(LocalDeployment.CodeHash(paymentCode), deployment.PaymentRuntimeCodeHash)) throw ContractMismatch();
+        foreach (var anchor in new[] { (deployment.DeploymentBlockNumber, deployment.DeploymentBlockHash), (deployment.CheckpointBlockNumber, deployment.CheckpointBlockHash) })
+        {
+            var block = await Rpc(web3.Eth.Blocks.GetBlockWithTransactionsHashesByNumber.SendRequestAsync(new BlockParameter(new HexBigInteger(anchor.Item1))), token);
+            if (block is null || !Same(block.BlockHash, anchor.Item2)) throw HistoryMismatch();
+        }
+        foreach (var deploymentReceipt in new[] { (deployment.TokenDeploymentTransactionHash, deployment.TokenAddress), (deployment.DeploymentTransactionHash, deployment.PaymentContractAddress) })
+        {
+            var receipt = await Rpc(web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(deploymentReceipt.Item1), token);
+            if (receipt is null || receipt.Status?.Value != 1 || receipt.BlockNumber is null || !Same(receipt.TransactionHash, deploymentReceipt.Item1) || !Same(receipt.ContractAddress, deploymentReceipt.Item2)) throw HistoryMismatch();
+            var block = await Rpc(web3.Eth.Blocks.GetBlockWithTransactionsHashesByNumber.SendRequestAsync(new BlockParameter(receipt.BlockNumber)), token);
+            if (block is null || !Same(block.BlockHash, receipt.BlockHash)) throw HistoryMismatch();
+        }
+        var identity = await Rpc(web3.Eth.Transactions.GetTransactionByHash.SendRequestAsync(deployment.NetworkIdentityTransactionHash), token);
+        var identityReceipt = await Rpc(web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(deployment.NetworkIdentityTransactionHash), token);
+        if (identity is null || identityReceipt is null || identityReceipt.Status?.Value != 1 || identityReceipt.BlockNumber?.Value != deployment.CheckpointBlockNumber || !Same(identityReceipt.BlockHash, deployment.CheckpointBlockHash) || !Same(identity.TransactionHash, deployment.NetworkIdentityTransactionHash) || !Same(identity.BlockHash, deployment.CheckpointBlockHash) || !Same(identity.From, deployment.OwnerAddress) || !Same(identity.To, deployment.OwnerAddress) || identity.Value?.Value != 0 || !Same(identity.Input, deployment.NetworkIdentityData)) throw HistoryMismatch();
+        var owner = await Rpc(web3.Eth.GetContractHandler(deployment.PaymentContractAddress).QueryAsync<OwnerFunction, string>(new()), token);
+        if (!Same(owner, deployment.OwnerAddress)) throw ContractMismatch();
+    }
+
     public async Task CheckConfigurationAsync(int planId, long price, CancellationToken token)
     {
-        Config.RequirePayments();
-        var web3 = new Web3(Config.RpcUrl);
-        if ((await Rpc(web3.Eth.ChainId.SendRequestAsync(), token)).Value != Config.ChainId) throw new ApiException(503, "RPC підключений до іншої мережі.");
-        var code = await Rpc(web3.Eth.GetCode.SendRequestAsync(Config.PaymentContractAddress), token);
-        if (code is "0x" or "0x0" or "") throw new ApiException(503, "Платіжний контракт відсутній у вибраній мережі.");
-        var contract = web3.Eth.GetContractHandler(Config.PaymentContractAddress);
+        var (config, deployment) = Configuration();
+        var web3 = new Web3(config.RpcUrl);
+        if ((await Rpc(web3.Eth.ChainId.SendRequestAsync(), token)).Value != config.ChainId) throw new ApiException(503, "RPC підключений до іншої мережі.", "wrong_chain");
+        var code = await Rpc(web3.Eth.GetCode.SendRequestAsync(config.PaymentContractAddress), token);
+        var tokenCode = await Rpc(web3.Eth.GetCode.SendRequestAsync(config.TokenAddress), token);
+        if (code is "0x" or "0x0" or "" || tokenCode is "0x" or "0x0" or "") throw new ApiException(503, "Платіжний контракт або токен відсутній у вибраній мережі.", "contracts_missing");
+        if (deployment is not null)
+        {
+            await CheckLocalAsync(web3, deployment, tokenCode, code, token);
+            if (!deployment.Plans.TryGetValue(planId, out var deployedPrice) || deployedPrice != price) throw new ApiException(503, "Локальний тариф не відповідає перевіреному розгортанню Anvil.", "contract_mismatch");
+        }
+        var contract = web3.Eth.GetContractHandler(config.PaymentContractAddress);
         var address = await Rpc(contract.QueryAsync<TokenFunction, string>(new()), token);
         var amount = await Rpc(contract.QueryAsync<PriceFunction, BigInteger>(new() { PlanId = planId }), token);
         var paused = await Rpc(contract.QueryAsync<PausedFunction, bool>(new()), token);
-        var decimals = await Rpc(web3.Eth.GetContractHandler(Config.TokenAddress).QueryAsync<DecimalsFunction, byte>(new()), token);
-        if (!Same(address, Config.TokenAddress) || amount != price || decimals != Config.TokenDecimals || paused)
-            throw new ApiException(503, "Ціна, токен або стан контракту не відповідає серверному тарифу. Потрібна перевірка адміністратора.");
+        var decimals = await Rpc(web3.Eth.GetContractHandler(config.TokenAddress).QueryAsync<DecimalsFunction, byte>(new()), token);
+        if (!Same(address, config.TokenAddress) || amount != price || decimals != config.TokenDecimals || paused)
+            throw new ApiException(503, "Ціна, токен або стан контракту не відповідає серверному тарифу. Потрібна перевірка адміністратора.", "contract_mismatch");
+    }
+
+    public async Task CheckHistoryAsync(IReadOnlyCollection<CryptoPayment> history, CancellationToken token)
+    {
+        if (settings.Value.ChainId != 31337) return;
+        var (config, _) = Configuration();
+        var web3 = new Web3(config.RpcUrl);
+        foreach (var payment in history)
+        {
+            if (!Same(payment.PaymentContractAddress, config.PaymentContractAddress) || !Same(payment.TokenContractAddress, config.TokenAddress) || payment.BlockNumber is null || !LocalDeployment.Hash(payment.BlockHash)) throw HistoryMismatch();
+            var block = await Rpc(web3.Eth.Blocks.GetBlockWithTransactionsHashesByNumber.SendRequestAsync(new BlockParameter(new HexBigInteger(payment.BlockNumber.Value))), token);
+            var receipt = await Rpc(web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(payment.TransactionHash), token);
+            if (block is null || receipt is null || receipt.Status?.Value != 1 || !Same(block.BlockHash, payment.BlockHash) || !Same(receipt.BlockHash, payment.BlockHash) || !Same(receipt.TransactionHash, payment.TransactionHash) || !Same(receipt.To, config.PaymentContractAddress)) throw HistoryMismatch();
+        }
     }
 
     public async Task<PaymentEvidence> VerifyAsync(PaymentOrder order, string transactionHash, CancellationToken token)
     {
-        Config.RequirePayments();
-        if (order.ChainId != Config.ChainId || !Same(order.TokenContractAddress, Config.TokenAddress) || !Same(order.PaymentContractAddress, Config.PaymentContractAddress)) return new("Rejected", "Заказ не відповідає налаштованій тестовій мережі.");
-        var web3 = new Web3(Config.RpcUrl);
+        var (config, deployment) = Configuration();
+        if (order.ChainId != config.ChainId || !Same(order.TokenContractAddress, config.TokenAddress) || !Same(order.PaymentContractAddress, config.PaymentContractAddress)) return new("Rejected", "Заказ не відповідає налаштованій тестовій мережі.");
+        var web3 = new Web3(config.RpcUrl);
         if ((await Rpc(web3.Eth.ChainId.SendRequestAsync(), token)).Value != order.ChainId) return new("RpcUnavailable", "RPC повернув іншу мережу.");
+        if (deployment is not null) await CheckConfigurationAsync(order.PlanId, order.Amount, token);
         var transaction = await Rpc(web3.Eth.Transactions.GetTransactionByHash.SendRequestAsync(transactionHash), token);
         if (transaction is null) return new("Pending", "Транзакцію ще не знайдено через RPC.");
         if (!Same(transaction.TransactionHash, transactionHash) || !Same(transaction.To, order.PaymentContractAddress) || !Same(transaction.From, order.WalletAddress) || transaction.Value.Value != 0)
@@ -85,7 +142,7 @@ public sealed class BlockchainVerifier(IOptions<BlockchainOptions> settings) : I
             return new("Rejected", "Параметри події не відповідають замовленню, токену або сумі.");
         var latest = (await Rpc(web3.Eth.Blocks.GetBlockNumber.SendRequestAsync(), token)).Value;
         var confirmations = latest - receipt.BlockNumber.Value + 1;
-        var state = confirmations >= Config.Confirmations ? "Confirmed" : "Pending";
-        return new(state, state == "Pending" ? $"Очікуємо {Config.Confirmations} підтверджень." : null, (long)receipt.BlockNumber.Value, receipt.BlockHash.ToLowerInvariant(), (int)purchased.Log.LogIndex.Value);
+        var state = confirmations >= config.Confirmations ? "Confirmed" : "Pending";
+        return new(state, state == "Pending" ? $"Очікуємо {config.Confirmations} підтверджень." : null, (long)receipt.BlockNumber.Value, receipt.BlockHash.ToLowerInvariant(), (int)purchased.Log.LogIndex.Value);
     }
 }

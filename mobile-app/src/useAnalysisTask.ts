@@ -32,7 +32,7 @@ export function useAnalysisTask(kind: "image" | "audio") {
     setTask(value);
     setStatus(undefined);
     setError("");
-    try { new File(Paths.document, `bird-task-${kind}.json`).write(JSON.stringify({ base: api.base, task: value })); }
+    try { new File(Paths.document, `bird-task-${kind}.json`).writeSync(JSON.stringify({ base: api.base, task: value })); }
     catch { setError("Завдання прийнято, але ID не вдалося зберегти на пристрої. Скопіюйте його для відновлення."); }
   }
   return { task, status, taskError: error, accept };

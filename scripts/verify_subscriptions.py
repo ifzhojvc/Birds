@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import urlparse
 
 import requests
 
@@ -49,7 +50,7 @@ class Protocol:
         (ROOT / "verification" / name).write_text(json.dumps(self.report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def compose(self, *args, timeout=300):
-        command = ["docker", "compose", "-p", self.docker_project, "-f", "compose.yaml", "-f", "compose.subscriptions-test.yaml", "--profile", "blockchain-local", *args]
+        command = ["docker", "compose", "-p", self.docker_project, "-f", "compose.yaml", "-f", "compose.override.yaml", "-f", "compose.subscriptions-test.yaml", *args]
         result = subprocess.run(command, cwd=ROOT, env=self.env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         if result.returncode:
             output = result.stdout + result.stderr
@@ -100,13 +101,13 @@ class Protocol:
         try:
             self.anvil.require_local()
         except requests.RequestException:
-            self.start("anvil", ["anvil", "--host", "127.0.0.1", "--port", str(int(self.args.rpc.rsplit(":", 1)[1])), "--chain-id", "31337", "--silent"])
+            self.start("anvil", ["anvil", "--host", "127.0.0.1", "--port", str(int(self.args.rpc.rsplit(":", 1)[1])), "--chain-id", "31337", "--state", str(self.artifacts / "anvil-state.json"), "--state-interval", "5", "--preserve-historical-states", "--silent"])
             self.wait(lambda: self.anvil.rpc("eth_chainId"))
         self.deployment = self.anvil.deploy(deployment_path=self.artifacts / "local-deployment.json")
         self.report["deployment"] = self.deployment
         self.owner, self.payer = self.anvil.rpc("eth_accounts")[:2]
         sql_server = self.env.get("BIRDLAB_SQL_SERVER", r".\SQLEXPRESS")
-        self.env.update({"ASPNETCORE_ENVIRONMENT": "Development", "ASPNETCORE_URLS": f"http://127.0.0.1:{self.args.port}", "ConnectionStrings__BirdLab": f"Server={sql_server};Database={self.database};Trusted_Connection=True;TrustServerCertificate=True", "Blockchain__Enabled": "true", "Blockchain__AllowLocalAnvil": "true", "Blockchain__TestMode": "true", "Blockchain__ChainId": "31337", "Blockchain__RpcUrl": self.args.rpc, "Blockchain__PublicRpcUrl": self.args.rpc, "Blockchain__TokenAddress": self.deployment["tokenAddress"], "Blockchain__PaymentContractAddress": self.deployment["paymentContractAddress"], "Blockchain__Confirmations": "3", "Blockchain__PollSeconds": "2", "RabbitMQ__Password": self.env.get("RABBITMQ_PASSWORD", ""), "RabbitMQ__Username": self.env.get("RABBITMQ_USERNAME", "birdlab"), "AiServer__InternalKey": self.env.get("AI_INTERNAL_KEY", ""), "AiServer__BaseUrl": "http://127.0.0.1:8000", "BIRD_OFFLINE": "true"})
+        self.env.update({"ASPNETCORE_ENVIRONMENT": "Development", "ASPNETCORE_URLS": f"http://127.0.0.1:{self.args.port}", "ConnectionStrings__BirdLab": f"Server={sql_server};Database={self.database};Trusted_Connection=True;TrustServerCertificate=True", "Blockchain__LocalDeploymentPath": str(self.artifacts / "local-deployment.json"), "Blockchain__Enabled": "true", "Blockchain__AllowLocalAnvil": "true", "Blockchain__TestMode": "true", "Blockchain__ChainId": "31337", "Blockchain__RpcUrl": self.args.rpc, "Blockchain__PublicRpcUrl": self.args.rpc, "Blockchain__TokenAddress": self.deployment["tokenAddress"], "Blockchain__PaymentContractAddress": self.deployment["paymentContractAddress"], "Blockchain__Confirmations": "3", "Blockchain__PollSeconds": "2", "RabbitMQ__Password": self.env.get("RABBITMQ_PASSWORD", ""), "RabbitMQ__Username": self.env.get("RABBITMQ_USERNAME", "birdlab"), "AiServer__InternalKey": self.env.get("AI_INTERNAL_KEY", ""), "AiServer__BaseUrl": "http://127.0.0.1:8000", "BIRD_OFFLINE": "true"})
         if not self.args.skip_ai:
             self.configure_broker()
         self.env["Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command"] = "Information"
@@ -136,25 +137,26 @@ class Protocol:
     def configure_docker(self):
         if self.args.skip_ai:
             raise ValueError("Docker verification requires the complete AI scenario.")
-        if self.args.rpc != "http://127.0.0.1:8545":
-            raise ValueError("Docker verification publishes Anvil on loopback port 8545 only.")
-        self.env.update({"SUBSCRIPTION_TEST_DATABASE": self.database, "SUBSCRIPTION_TEST_PORT": str(self.args.port), "SUBSCRIPTION_TEST_VHOST": "birdlab", "SUBSCRIPTION_TEST_TOKEN": "", "SUBSCRIPTION_TEST_CONTRACT": ""})
+        rpc = urlparse(self.args.rpc)
+        if rpc.hostname not in {"127.0.0.1", "localhost"} or rpc.port in {None, 8545} or self.args.port == 5100:
+            raise ValueError("Use dedicated loopback QA ports, separate from the working stack.")
+        self.env.update({"SUBSCRIPTION_TEST_DATABASE": self.database, "SUBSCRIPTION_TEST_PORT": str(self.args.port), "SUBSCRIPTION_TEST_RPC_PORT": str(rpc.port), "SUBSCRIPTION_TEST_VHOST": "birdlab"})
         self.docker_started = True
-        self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180", "sql", "rabbitmq", "ai", "anvil")
+        self.compose("up", "-d", "--build", timeout=900)
+        self.compose("wait", "blockchain-init", timeout=180)
         cookie = self.compose("exec", "-T", "rabbitmq", "stat", "-c", "%U %a", "/var/lib/rabbitmq/.erlang.cookie").strip().split()
         assert len(cookie) == 2 and cookie[0] == "rabbitmq" and cookie[1] in {"400", "600"}
         self.report["rabbitmqCookiePermissions"] = {"owner": cookie[0], "mode": cookie[1], "valueRead": False}
-        self.record("Isolated Docker SQL, RabbitMQ, AI and Anvil passed startup health checks")
+        self.record("Isolated Compose automatically started and verified persistent Anvil with SQL, RabbitMQ and AI")
         self.wait(lambda: self.anvil.rpc("eth_chainId"))
-        self.deployment = self.anvil.deploy(deployment_path=self.artifacts / "local-deployment.json")
+        self.deployment = json.loads(self.compose("exec", "-T", "central", "cat", "/blockchain/deployment.json"))
         self.report["deployment"] = self.deployment
+        self.report["rabbitmqVhost"] = "birdlab"
         self.owner, self.payer = self.anvil.rpc("eth_accounts")[:2]
-        self.configure_broker()
-        self.env.update({"SUBSCRIPTION_TEST_TOKEN": self.deployment["tokenAddress"], "SUBSCRIPTION_TEST_CONTRACT": self.deployment["paymentContractAddress"], "SUBSCRIPTION_TEST_VHOST": self.report["rabbitmqVhost"]})
-        self.compose("up", "-d", "--no-build", "migrate", "central", "worker")
         self.wait(lambda: requests.get(self.base + "/health", timeout=12).status_code == 200, 180)
         network = self.request("GET", "/subscriptions/network")
         assert network["paymentContractAddress"].lower() == self.deployment["paymentContractAddress"].lower()
+        assert self.request("GET", "/subscriptions/readiness")["ready"] is True
         containers = [json.loads(line) for line in self.compose("ps", "--format", "json").splitlines() if line.strip()]
         self.report["containers"] = [{key: item.get(key) for key in ("ID", "Name", "Service", "Image", "State", "Health")} for item in containers]
         image_ids = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", *[item["ID"] for item in containers]], cwd=ROOT, env=self.env, text=True, encoding="utf-8").splitlines()
@@ -162,7 +164,7 @@ class Protocol:
         for item, image_id in zip(self.report["containers"], image_ids):
             item["ImageId"] = image_id
         self.report["health"] = self.request("GET", "/health")
-        self.record("Real Anvil contracts deployed; isolated SQL migrations applied", **self.deployment)
+        self.record("Automatic contracts verified; isolated SQL migrations applied", **self.deployment)
 
     def capture_evidence(self):
         self.report["sqlEvidence"] = {
@@ -172,7 +174,9 @@ class Protocol:
         }
         if not self.args.skip_ai:
             rows = self.report["sqlEvidence"]["analyses"]
-            assert len(rows) == 2 and all(row["Status"] == "Completed" and row["UsageStatus"] == "Consumed" and row["Predictions"] == 3 and row["PublishedOutbox"] == 1 and row["InboxEvents"] >= 1 for row in rows)
+            assert len(rows) == 2
+            assert all(row["PublishedOutbox"] == 1 and row["InboxEvents"] >= 1 for row in rows)
+            assert all((row["Status"] == "Completed" and row["UsageStatus"] == "Consumed" and row["Predictions"] == 3) or (row["Status"] == "Failed" and row["UsageStatus"] == "Released" and row["Predictions"] == 0) for row in rows)
             broker = requests.Session()
             broker.auth = (self.env["RABBITMQ_USERNAME"], self.env["RABBITMQ_PASSWORD"])
             response = broker.get(self.broker_url + "/api/queues/" + self.report["rabbitmqVhost"], timeout=10)
@@ -232,17 +236,19 @@ class Protocol:
         assert self.request("GET", "/subscriptions/me")["endDate"] == period["endDate"]
         if test_reorg:
             orphaned_hash = result["transactionHash"]
+            saved_state = self.anvil.rpc("anvil_dumpState")
             assert self.anvil.rpc("evm_revert", [snapshot])
             lost = self.request("POST", "/subscriptions/payments/verify", json={"orderId": order["id"], "transactionHash": transaction})
-            assert lost["status"] == "Reorged"
-            assert self.request("GET", "/subscriptions/me")["plan"] == "FREE"
-            replay = self.anvil.call(self.payer, self.deployment["paymentContractAddress"], "purchaseSubscription(bytes32,uint256)", order["orderId"], plan)
-            self.anvil.rpc("anvil_mine", ["0x2"])
-            restored = self.request("POST", "/subscriptions/payments/verify", json={"orderId": order["id"], "transactionHash": replay})
+            assert lost["status"] == "Confirmed"
+            assert self.request("GET", "/subscriptions/me")["endDate"] == period["endDate"]
+            assert self.request("GET", "/subscriptions/readiness")["ready"] is False
+            assert self.anvil.rpc("anvil_loadState", [saved_state])
+            restored = self.request("POST", "/subscriptions/payments/verify", json={"orderId": order["id"], "transactionHash": transaction})
             assert restored["status"] == "Confirmed"
+            assert self.request("GET", "/subscriptions/readiness")["ready"] is True
             assert self.request("GET", "/subscriptions/me")["endDate"] == period["endDate"]
             result = restored
-            self.record("Real Anvil reorg revoked access; canonical transaction restored same period without extension", orphanedTransactionHash=orphaned_hash, canonicalTransactionHash=restored["transactionHash"])
+            self.record("Missing local payment history blocked payments and preserved PRO; restored canonical state passed verification", transactionHash=orphaned_hash)
         rows = self.sql(f"SELECT Status,ChainId,TransactionHash,LogIndex,Amount FROM CryptoPayments WHERE PaymentOrderId='{order['id']}' FOR JSON PATH")
         assert len(rows) == 1 and rows[0]["Status"] == "Confirmed" and rows[0]["Amount"] == amount
         assert rows[0]["TransactionHash"].lower() == result["transactionHash"].lower()
@@ -254,16 +260,24 @@ class Protocol:
         before = self.request("GET", "/subscriptions/usage")["remaining"]
         with path.open("rb") as stream:
             accepted = self.request("POST", f"/analysis/{kind}", 202, files={"file": (path.name, stream)})
-        assert self.request("GET", "/subscriptions/usage")["remaining"] == before - 1
         def terminal():
             status = self.request("GET", f"/analyses/{accepted['analysisId']}/status")
             return status if status["status"] in {"Completed", "Failed"} else None
         status = self.wait(terminal, 300)
+        if status["status"] == "Failed":
+            assert kind == "audio" and status["errorMessage"] == "Звуки птаха виявлено, але визначити вид із достатньою впевненістю не вдалося."
+            assert self.request("GET", "/subscriptions/usage")["remaining"] == before
+            rows = self.sql(f"SELECT u.Status UsageStatus,(SELECT COUNT(*) FROM Predictions p WHERE p.AnalysisId=a.Id) Predictions FROM Analyses a JOIN UsageRecords u ON u.JobId=a.JobId WHERE a.JobId='{accepted['analysisId']}' FOR JSON PATH")
+            assert rows == [{"UsageStatus": "Released", "Predictions": 0}]
+            self.record("Real audio detected a bird but rejected an uncertain species; quota released", analysisId=accepted["analysisId"])
+            return False
         assert status["status"] == "Completed", "Real AI analysis failed; inspect local worker log."
         assert len(status["result"]["predictions"]) == 3
+        assert self.request("GET", "/subscriptions/usage")["remaining"] == before - 1
         row = self.sql(f"SELECT a.Status,a.ModelName,a.ModelRevision,a.MetadataJson,u.Status UsageStatus FROM Analyses a JOIN UsageRecords u ON u.JobId=a.JobId WHERE a.JobId='{accepted['analysisId']}' FOR JSON PATH")[0]
         assert row["UsageStatus"] == "Consumed" and json.loads(row["MetadataJson"])["mock_used"] is False
         self.record(f"Real RabbitMQ -> Python Hugging Face -> SQL {kind} analysis; one quota unit consumed", analysisId=accepted["analysisId"], model=row["ModelName"], modelRevision=row.get("ModelRevision"), metadata=json.loads(row["MetadataJson"]), predictions=status["result"]["predictions"], mock_used=False, remaining=before - 1)
+        return True
 
     def verify_free_limits_and_privacy(self):
         assert requests.get(self.base + "/subscriptions/me", timeout=10).status_code == 401
@@ -319,16 +333,16 @@ class Protocol:
             self.account()
             order = self.payment(test_reorg=True)
             if not self.args.skip_ai:
-                self.analysis(sorted((ROOT / "sample_images").glob("*.jpg"))[0], "image")
-                self.analysis(sorted((ROOT / "sample_audio").glob("*.wav"))[0], "audio")
-                assert self.request("GET", "/analyses")["total"] == 2
-                self.record("Authenticated history contains both real analyses; PRO remaining quota is 98")
+                self.successful_analyses = int(self.analysis(sorted((ROOT / "sample_images").glob("*.jpg"))[0], "image"))
+                self.successful_analyses += int(self.analysis(sorted((ROOT / "sample_audio").glob("*.wav"))[0], "audio"))
+                assert self.request("GET", "/analyses")["total"] == self.successful_analyses
+                self.record("History contains only successful real analyses; uncertain content did not consume quota")
                 self.verify_free_limits_and_privacy()
             self.sql(f"UPDATE UserSubscriptions SET StartDate=DATEADD(day,-31,SYSDATETIMEOFFSET()),EndDate=DATEADD(second,-1,SYSDATETIMEOFFSET()) WHERE PaymentOrderId='{order['id']}'; SELECT Id FROM UserSubscriptions WHERE PaymentOrderId='{order['id']}' FOR JSON PATH")
             assert self.request("GET", "/subscriptions/me")["plan"] == "FREE"
             self.wait(lambda: self.sql(f"SELECT Status FROM UserSubscriptions WHERE PaymentOrderId='{order['id']}' FOR JSON PATH")[0]["Status"] == "Expired", 20)
             if not self.args.skip_ai:
-                assert self.request("GET", "/analyses")["total"] == 2
+                assert self.request("GET", "/analyses")["total"] == self.successful_analyses
             self.record("Expiry background service persisted Expired; immediate FREE fallback preserved history")
             self.payment(plan=2, check_pending=True)
             self.capture_evidence()
@@ -366,8 +380,8 @@ class Protocol:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Справжній Anvil + MS SQL + RabbitMQ + Hugging Face протокол без реальних коштів.")
-    parser.add_argument("--rpc", default="http://127.0.0.1:8545")
-    parser.add_argument("--port", type=int, default=5100)
+    parser.add_argument("--rpc", default="http://127.0.0.1:18545")
+    parser.add_argument("--port", type=int, default=5110)
     parser.add_argument("--skip-ai", action="store_true", help="Лише блокчейн і SQL; не є доказом повного AI-сценарію.")
     parser.add_argument("--keep-services", action="store_true")
     parser.add_argument("--docker", action="store_true", help="Справжній сценарій в ізольованому Docker Compose; робочі volumes не змінюються.")

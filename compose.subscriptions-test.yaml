@@ -1,10 +1,16 @@
 services:
+  sql:
+    environment:
+      MSSQL_MEMORY_LIMIT_MB: '768'
   ai:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-ai
     environment:
       BIRD_OFFLINE: 'true'
     volumes: !override
-      - model-cache:/app/.cache/huggingface:ro
+      - type: bind
+        source: ${SUBSCRIPTION_MODEL_CACHE_PATH:-./.cache/huggingface}
+        target: /app/.cache/huggingface
+        read_only: true
   worker:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-worker
     environment:
@@ -12,33 +18,36 @@ services:
       RABBITMQ_VHOST: ${SUBSCRIPTION_TEST_VHOST:-birdlab}
     volumes: !override
       - media:/app/storage:ro
-      - model-cache:/app/.cache/huggingface:ro
+      - type: bind
+        source: ${SUBSCRIPTION_MODEL_CACHE_PATH:-./.cache/huggingface}
+        target: /app/.cache/huggingface
+        read_only: true
       - worker-state:/app/worker-state
   migrate:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-migrate
     environment:
       ConnectionStrings__BirdLab: 'Server=sql,1433;Database=${SUBSCRIPTION_TEST_DATABASE:-BirdLabSubscriptionIntegration};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+  blockchain-guard:
+    image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-central
+    environment:
+      ConnectionStrings__BirdLab: 'Server=sql,1433;Database=${SUBSCRIPTION_TEST_DATABASE:-BirdLabSubscriptionIntegration};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+  blockchain-init:
+    image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-blockchain-init
+    command: [--rpc, 'http://anvil:8545', --docker-network, --no-build, --deployment, /blockchain/deployment.json, --guard, /blockchain/sql-guard.json]
+    volumes: !override
+      - blockchain-config:/blockchain
   central:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-central
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__BirdLab: 'Server=sql,1433;Database=${SUBSCRIPTION_TEST_DATABASE:-BirdLabSubscriptionIntegration};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
       RabbitMQ__VirtualHost: ${SUBSCRIPTION_TEST_VHOST:-birdlab}
-      Blockchain__Enabled: 'true'
-      Blockchain__AllowLocalAnvil: 'true'
-      Blockchain__ChainId: '31337'
-      Blockchain__RpcUrl: http://anvil:8545
-      Blockchain__PublicRpcUrl: http://127.0.0.1:8545
-      Blockchain__TokenAddress: ${SUBSCRIPTION_TEST_TOKEN:-}
-      Blockchain__PaymentContractAddress: ${SUBSCRIPTION_TEST_CONTRACT:-}
-      Blockchain__Confirmations: '3'
-      Blockchain__PollSeconds: '2'
+      Blockchain__PublicRpcUrl: http://127.0.0.1:${SUBSCRIPTION_TEST_RPC_PORT:-18545}
+      Blockchain__LocalDeploymentPath: /blockchain/deployment.json
     ports: !override
       - '127.0.0.1:${SUBSCRIPTION_TEST_PORT:-5110}:5100'
+  anvil:
+    ports: !override
+      - '127.0.0.1:${SUBSCRIPTION_TEST_RPC_PORT:-18545}:8545'
   rabbitmq:
     ports: !override
-      - '127.0.0.1:15673:15672'
-volumes:
-  model-cache:
-    external: true
-    name: ${SUBSCRIPTION_MODEL_CACHE_VOLUME:-birds_model-cache}
+      - '127.0.0.1:${SUBSCRIPTION_TEST_RABBIT_PORT:-15673}:15672'

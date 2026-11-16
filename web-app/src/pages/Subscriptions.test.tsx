@@ -87,10 +87,14 @@ const plans: Plan[] = [
   },
 ];
 let serverStatus = "Pending";
+let paymentReady = true;
+let currentNetwork = network;
 let order: PaymentOrder;
 beforeEach(() => {
   localStorage.clear();
   serverStatus = "Pending";
+  paymentReady = true;
+  currentNetwork = network;
   order = {
     id: "test-order",
     orderId: `0x${"3".repeat(64)}`,
@@ -124,7 +128,8 @@ beforeEach(() => {
   vi.mocked(wallet.estimatePayment).mockResolvedValue("0.000001");
   vi.spyOn(api, "request").mockImplementation(async (path) => {
     if (path === "/subscriptions/plans") return plans;
-    if (path === "/subscriptions/network") return network;
+    if (path === "/subscriptions/network") return currentNetwork;
+    if (path === "/subscriptions/readiness") return { ready: paymentReady, state: paymentReady ? "ready" : "unavailable", message: "Історія Anvil потребує відновлення. Підписку збережено." };
     if (path === "/wallets/nonce")
       return {
         nonce: "one-time-nonce",
@@ -288,6 +293,34 @@ describe("тестові криптопідписки — змодельован
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+  });
+  it("зупиняє дозвіл ERC-20, коли локальна мережа втратила готовність", async () => {
+    const user = await prepare();
+    paymentReady = false;
+    await user.click(screen.getByRole("button", { name: "Підтвердити дозвіл ERC-20" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Історія Anvil потребує відновлення");
+    expect(wallet.approveOrder).not.toHaveBeenCalled();
+    expect(wallet.payOrder).not.toHaveBeenCalled();
+  });
+  it("повторно перевіряє готовність перед оплатою після успішного approve", async () => {
+    const user = await prepare();
+    await approve(user);
+    paymentReady = false;
+    await user.click(screen.getByRole("button", { name: "Оплатити 5 тестових USDC" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Підписку збережено");
+    expect(wallet.payOrder).not.toHaveBeenCalled();
+  });
+  it.each(["chain", "token", "contract"])("блокує застаріле замовлення після зміни %s", async (field) => {
+    const user = await prepare();
+    currentNetwork = { ...network,
+      chainId: field === "chain" ? 31337 : network.chainId,
+      tokenAddress: field === "token" ? address : network.tokenAddress,
+      paymentContractAddress: field === "contract" ? address : network.paymentContractAddress,
+    };
+    await user.click(screen.getByRole("button", { name: "Підтвердити дозвіл ERC-20" }));
+    await screen.findByRole("alert");
+    expect(wallet.approveOrder).not.toHaveBeenCalled();
+    expect(wallet.payOrder).not.toHaveBeenCalled();
   });
   it("відображає активний тариф і залишок із API", async () => {
     view(<MySubscription />, "/account");

@@ -8,8 +8,9 @@ from PIL import Image
 
 from birdlab.config import AUDIO_MODEL, AUDIO_REVISION, AUDIO_SEGMENT_SECONDS, IMAGE_MODEL, IMAGE_REVISION, MODEL_CACHE
 from birdlab.domain import InferenceResult, Prediction, validate_predictions
-from birdlab.errors import ModelError
+from birdlab.errors import ContentError, ModelError
 from birdlab.files import AudioData
+from birdlab.presence import probability_setting, require_audio_bird, require_image_bird
 from birdlab.taxonomy import scientific_for_label
 
 
@@ -97,13 +98,14 @@ def _predictions(raw: list[dict], kind: str) -> tuple[Prediction, ...]:
 
 
 def classify_image(image: Image.Image, offline: bool = False) -> InferenceResult:
-    bundle = get_image_model(offline)
     started = time.perf_counter()
+    presence = require_image_bird(image, offline)
+    bundle = get_image_model(offline)
     try:
         with bundle.lock:
             raw = bundle.classifier(image, top_k=3)
         predictions = _predictions(raw, "image")
-        return InferenceResult(predictions, IMAGE_MODEL, IMAGE_REVISION, time.perf_counter() - started, {"class_count": 200})
+        return InferenceResult(predictions, IMAGE_MODEL, IMAGE_REVISION, time.perf_counter() - started, {"class_count": 200, "presence": presence})
     except ModelError:
         raise
     except Exception as exc:
@@ -111,10 +113,11 @@ def classify_image(image: Image.Image, offline: bool = False) -> InferenceResult
 
 
 def classify_audio(audio: AudioData, offline: bool = False) -> InferenceResult:
+    started = time.perf_counter()
+    presence = require_audio_bird(audio, offline)
     bundle = get_audio_model(offline)
     if audio.sample_rate != bundle.sample_rate:
         raise ModelError(f"Аудіомодель очікує {bundle.sample_rate} Гц. Перетворіть запис до цієї частоти.")
-    started = time.perf_counter()
     chunk_size = AUDIO_SEGMENT_SECONDS * audio.sample_rate
     totals: dict[str, float] = {}
     sample_count = 0
@@ -132,8 +135,12 @@ def classify_audio(audio: AudioData, offline: bool = False) -> InferenceResult:
             sample_count += weight
             segments += 1
         predictions = _predictions([{"label": label, "score": score / sample_count} for label, score in totals.items()], "audio")
-        return InferenceResult(predictions, AUDIO_MODEL, AUDIO_REVISION, time.perf_counter() - started, {"sample_rate": audio.sample_rate, "original_rate": audio.original_rate, "original_channels": audio.original_channels, "duration": audio.duration, "segments": segments, "aggregation": "duration_weighted_mean_all_22_classes"})
-    except ModelError:
+        minimum = probability_setting("BIRD_AUDIO_SPECIES_MIN_CONFIDENCE", .50)
+        margin = probability_setting("BIRD_AUDIO_SPECIES_MIN_MARGIN", .10)
+        if predictions[0].label == "background" or predictions[0].score < minimum or predictions[0].score - predictions[1].score < margin:
+            raise ContentError("bird_species_uncertain", "Звуки птаха виявлено, але визначити вид із достатньою впевненістю не вдалося.")
+        return InferenceResult(predictions, AUDIO_MODEL, AUDIO_REVISION, time.perf_counter() - started, {"sample_rate": audio.sample_rate, "original_rate": audio.original_rate, "original_channels": audio.original_channels, "duration": audio.duration, "segments": segments, "aggregation": "duration_weighted_mean_all_22_classes", "presence": presence, "species_min_confidence": minimum, "species_min_margin": margin})
+    except (ContentError, ModelError):
         raise
     except Exception as exc:
         raise ModelError("Не вдалося проаналізувати аудіо. Спробуйте коротший або якісніший запис.") from exc

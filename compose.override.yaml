@@ -1,0 +1,66 @@
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.7.1
+    user: '0:0'
+    entrypoint: [anvil]
+    command: [--host, 0.0.0.0, --port, '8545', --chain-id, '31337', --state, /data/state.json, --state-interval, '5', --preserve-historical-states, --silent]
+    ports:
+      - '127.0.0.1:8545:8545'
+    volumes:
+      - anvil-state:/data
+    healthcheck:
+      test: [CMD-SHELL, 'test "$(cast chain-id --rpc-url http://127.0.0.1:8545)" = 31337']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    stop_grace_period: 90s
+  blockchain-guard:
+    build:
+      context: .
+      dockerfile: central-server/Dockerfile
+    command: [--blockchain-guard]
+    environment:
+      ConnectionStrings__BirdLab: 'Server=sql,1433;Database=AIBirdLab;User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+      Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+    volumes:
+      - blockchain-config:/blockchain
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure:3
+  blockchain-init:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.blockchain
+    command: [--rpc, 'http://anvil:8545', --docker-network, --no-build, --deployment, /blockchain/deployment.json, --legacy, /legacy/local-deployment.json, --guard, /blockchain/sql-guard.json]
+    volumes:
+      - blockchain-config:/blockchain
+      - ./verification:/legacy:ro
+    depends_on:
+      anvil:
+        condition: service_healthy
+      blockchain-guard:
+        condition: service_completed_successfully
+    restart: on-failure:3
+  central:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Blockchain__Enabled: 'true'
+      Blockchain__TestMode: 'true'
+      Blockchain__AllowLocalAnvil: 'true'
+      Blockchain__ChainId: '31337'
+      Blockchain__RpcUrl: http://anvil:8545
+      Blockchain__PublicRpcUrl: http://127.0.0.1:8545
+      Blockchain__TokenAddress: ''
+      Blockchain__PaymentContractAddress: ''
+      Blockchain__TokenDecimals: '6'
+      Blockchain__Confirmations: '3'
+      Blockchain__PollSeconds: '2'
+      Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+    volumes:
+      - blockchain-config:/blockchain:ro
+volumes:
+  anvil-state:
+  blockchain-config:

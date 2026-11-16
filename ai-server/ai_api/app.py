@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from birdlab.config import MAX_AUDIO_BYTES, MAX_IMAGE_BYTES
-from birdlab.errors import InputError, ModelError
+from birdlab.errors import ContentError, InputError, ModelError
 from birdlab.files import load_image
 from birdlab.models import _cached_model, classify_audio, classify_image
 from ai_api.audio import decode_audio
@@ -62,7 +62,7 @@ def error(request: Request, status: int, code: str, message: str):
 
 @app.exception_handler(InputError)
 async def invalid_input(request: Request, exc: InputError):
-    return error(request, 422, "invalid_file", str(exc))
+    return error(request, 422, exc.code if isinstance(exc, ContentError) else "invalid_file", str(exc))
 
 
 @app.exception_handler(ModelError)

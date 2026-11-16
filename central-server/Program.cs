@@ -24,7 +24,7 @@ if (args.Contains("--healthcheck"))
     return;
 }
 
-var maintenance = args.Any(a => a is "--migrate-db" or "--import-sqlite" or "--seed-catalog");
+var maintenance = args.Any(a => a is "--migrate-db" or "--import-sqlite" or "--seed-catalog" or "--blockchain-guard");
 var builder = WebApplication.CreateBuilder(maintenance ? [] : args);
 builder.Services.AddDbContext<BirdDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("BirdLab") ?? throw new InvalidOperationException("ConnectionStrings:BirdLab is required.")));
 builder.Services.AddControllers();
@@ -92,6 +92,12 @@ if (!maintenance)
     builder.Services.AddHostedService<SubscriptionMonitor>();
 }
 var app = builder.Build();
+if (args.Contains("--blockchain-guard"))
+{
+    using var scope = app.Services.CreateScope();
+    await LocalBlockchainGuard.WriteAsync(scope.ServiceProvider.GetRequiredService<BirdDbContext>(), builder.Configuration["Blockchain:LocalDeploymentPath"] ?? "", CancellationToken.None);
+    return;
+}
 if (args.Contains("--migrate-db") || args.Contains("--import-sqlite") || args.Contains("--seed-catalog"))
 {
     using var scope = app.Services.CreateScope();

@@ -27,7 +27,7 @@ try {
         try {
             switch ($name) {
                 'python' {
-                    $options = @('-q', '--tb=short', '--cov=birdlab', '--cov=ai-server', '--cov=app', '--cov-branch',
+                    $options = @('-q', '--tb=short', '--cov=birdlab', '--cov=ai-server', '--cov=app', '--cov=scripts.local_blockchain', '--cov-branch',
                         "--cov-report=html:$report/html", "--cov-report=json:$report/coverage.json",
                         "--junitxml=$report/tests.xml", "--basetemp=$report/tmp")
                     $runRealModels = $env:RUN_REAL_MODELS

@@ -165,6 +165,7 @@ def test_online_cache_miss_downloads_only_pinned_files_and_reports_failure(model
 @pytest.mark.parametrize("kind", ["image", "audio"])
 def test_classifier_wraps_dependency_exception(monkeypatch, kind):
     classifier = Mock(side_effect=RuntimeError("dependency failure"))
+    monkeypatch.setattr(models, f"require_{kind}_bird", Mock(return_value={"score": .9}))
     monkeypatch.setattr(models, f"get_{kind}_model", lambda offline: models.ModelBundle(classifier, 16000))
     media = Mock() if kind == "image" else AudioData(np.ones(4000), 16000, .25, 16000, 1)
     with pytest.raises(ModelError, match="Не вдалося проаналізувати") as failure:

@@ -4,6 +4,9 @@ import pytest
 
 from birdlab.config import ROOT, SAMPLE_DIR
 from birdlab.files import read_file
+from birdlab.errors import ContentError
+from birdlab.presence import require_audio_bird
+from birdlab.files import load_audio
 from birdlab.service import AnalysisService, sample_manifest, verified_evaluation
 
 
@@ -30,8 +33,10 @@ def test_real_audio_pipeline(repository, tmp_path):
     path = ROOT / "sample_audio" / "robin.wav"
     assert path.is_file(), "Спочатку завантажте справжній аудіозразок"
     service = AnalysisService(repository, offline=True, export_path=tmp_path / "real.csv")
-    analysis_id = service.analyze(read_file(path), path.name, "audio")
-    record = repository.get(analysis_id)
-    assert record["model_id"] == "greenarcade/wav2vec2-vd-bird-sound-classification"
-    assert len(record["predictions"]) == 3 and record["metadata"]["sample_rate"] == 16000
+    content = read_file(path)
+    assert require_audio_bird(load_audio(content, path.name), True)["score"] >= .30
+    with pytest.raises(ContentError) as failure:
+        service.analyze(content, path.name, "audio")
+    assert failure.value.code == "bird_species_uncertain"
+    assert repository.all() == []
     assert repository.evaluations() == []

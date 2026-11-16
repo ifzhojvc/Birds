@@ -24,7 +24,15 @@ public sealed class SubscriptionsController(BirdDbContext db, CurrentUser curren
         return Ok(plans.Select(p => new { p.Id, p.Name, price = p.Price.ToString(System.Globalization.CultureInfo.InvariantCulture), p.Currency, p.DurationDays, p.AnalysisLimit, features = SubscriptionService.Features(p.Features), tokenDecimals = settings.Value.TokenDecimals }));
     }
     [AllowAnonymous, HttpGet("network")]
-    public IActionResult Network() => Ok(new { settings.Value.Enabled, settings.Value.TestMode, settings.Value.ChainId, rpcUrl = settings.Value.PublicRpcUrl, settings.Value.TokenAddress, settings.Value.PaymentContractAddress, settings.Value.TokenDecimals, settings.Value.Confirmations, settings.Value.ExplorerUrl });
+    public IActionResult Network()
+    {
+        var config = settings.Value;
+        try { config = config.ResolveContracts(); }
+        catch (ApiException) { }
+        return Ok(new { config.Enabled, config.TestMode, config.ChainId, rpcUrl = config.PublicRpcUrl, config.TokenAddress, config.PaymentContractAddress, config.TokenDecimals, config.Confirmations, config.ExplorerUrl });
+    }
+    [AllowAnonymous, HttpGet("readiness")]
+    public Task<PaymentReadiness> Readiness(CancellationToken token) => payments.ReadinessAsync(token);
     [HttpGet("me"), HttpGet("usage")]
     public Task<Entitlement> Me(CancellationToken token) => subscriptions.GetAsync(current.Id, token);
     [HttpGet("history")]

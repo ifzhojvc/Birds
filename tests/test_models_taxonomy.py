@@ -11,6 +11,12 @@ from birdlab.models import ModelBundle, classify_audio, classify_image
 from birdlab.taxonomy import compare_taxa, scientific_for_label
 
 
+@pytest.fixture(autouse=True)
+def species_without_presence_dependencies(monkeypatch):
+    for kind in ("image", "audio"):
+        monkeypatch.setattr(f"birdlab.models.require_{kind}_bird", Mock(return_value={"score": .9}))
+
+
 @pytest.mark.parametrize("raw", [[], None, [{"label": "a", "score": 0.2}], [{"label": "a", "score": float("nan")}] * 3, [{"label": "a", "score": 1.5}] * 3, [{"label": "a", "score": 0.3}] * 3])
 def test_bad_predictions(raw):
     with pytest.raises(ModelError):
@@ -33,8 +39,8 @@ def test_empty_real_dependency_response_is_error(monkeypatch):
 
 
 def test_audio_duration_weighted_all_classes(monkeypatch):
-    labels = ["background", "Great_egret"] + [f"class_{i}" for i in range(20)]
-    first = [{"label": label, "score": 0.6 if index == 0 else 0.4 if index == 1 else 0} for index, label in enumerate(labels)]
+    labels = ["Great_egret", "Little_egret"] + [f"class_{i}" for i in range(20)]
+    first = [{"label": label, "score": 0.9 if index == 0 else 0.1 if index == 1 else 0} for index, label in enumerate(labels)]
     second = [{"label": label, "score": 0.0 if index == 0 else 1.0 if index == 1 else 0} for index, label in enumerate(labels)]
     classifier = Mock(side_effect=[first, second])
     monkeypatch.setattr("birdlab.models.get_audio_model", lambda offline: ModelBundle(classifier, 16000))
@@ -42,9 +48,9 @@ def test_audio_duration_weighted_all_classes(monkeypatch):
     result = classify_audio(audio)
     assert result.metadata["segments"] == 2
     assert classifier.call_args_list[0].kwargs["top_k"] == 22
-    assert result.predictions[0].label == "background"
-    assert result.predictions[0].score == pytest.approx(0.5)
-    assert result.predictions[1].score == pytest.approx(0.5)
+    assert result.predictions[0].label == "Great_egret"
+    assert result.predictions[0].score == pytest.approx(0.75)
+    assert result.predictions[1].score == pytest.approx(0.25)
 
 
 def test_audio_wrong_sample_rate(monkeypatch):

@@ -1,6 +1,6 @@
 module.exports = {
   rootDir: "..",
-  preset: "<rootDir>/mobile-app/node_modules/jest-expo",
+  preset: require.resolve("jest-expo/jest-preset"),
   roots: ["<rootDir>/mobile-app", "<rootDir>/shared"],
   moduleDirectories: ["node_modules", "<rootDir>/mobile-app/node_modules"],
   cacheDirectory: "<rootDir>/mobile-app/.cache/jest",
@@ -12,5 +12,9 @@ module.exports = {
     "mobile-app/src/**/*.{ts,tsx}",
     "shared/**/*.ts",
   ],
+  coverageDirectory: "<rootDir>/mobile-app/coverage",
+  coverageThreshold: {
+    global: { statements: 90, branches: 90, functions: 90, lines: 90 },
+  },
   coverageReporters: ["text-summary", "html", "json", "json-summary", "lcov"],
 };

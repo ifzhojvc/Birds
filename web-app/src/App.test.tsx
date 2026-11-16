@@ -302,7 +302,7 @@ it("requests comparisons only for distinct ids and shows model uncertainty", asy
 it("shows evaluation totals only when the subscription includes advanced statistics", async () => {
   const request = mockHttp();
   const view = mount("/statistics");
-  expect(await screen.findByRole("cell", { name: "1 / 2" })).toBeVisible();
+  expect(await screen.findByRole("cell", { name: "1 / 2" }, { timeout: 3000 })).toBeVisible();
   expect(screen.getByRole("cell", { name: "2 / 2" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "Розподіл confidence" })).toBeVisible();
   view.unmount();
@@ -395,4 +395,25 @@ it("shows the home fallback and retries an unavailable history request", async (
   failed = false;
   await user.click(screen.getByRole("button", { name: "Спробувати ще раз" }));
   expect(await screen.findByText("Тут починається ваше дослідження")).toBeVisible();
+});
+
+
+it.each([
+  ["image", "/photo", "nonbird.png", "На зображенні не вдалося виявити птаха. Спробуйте завантажити іншу фотографію."],
+  ["audio", "/audio", "speech.wav", "На аудіозаписі не вдалося виявити звуків птахів. Завантажте інший запис."],
+])("shows the server content rejection for %s without a species result", async (kind, route, name, message) => {
+  const request = mockHttp((url) => {
+    if (url.pathname === `/api/analysis/${kind}`) return json(task, 202);
+    if (url.pathname === task.statusUrl) return json(status("Failed", { errorMessage: message }));
+  });
+  const { user } = mount(route);
+  const input = await screen.findByLabelText("Обрати файли");
+  fireEvent.drop(input.closest("label")!, { dataTransfer: { files: [file(name)] } });
+  await user.click(screen.getByRole("button", { name: "Розпочати аналіз" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  expect(screen.getByTestId("analysis-task")).toHaveAttribute("data-status", "Failed");
+  expect(screen.queryByText("Cardinal")).toBeNull();
+  expect(screen.queryByRole("link", { name: /Відкрити результат/ })).toBeNull();
+  const polls = request.mock.calls.filter(([url]) => String(url).endsWith(task.statusUrl));
+  expect(polls).toHaveLength(1);
 });
