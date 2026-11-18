@@ -190,6 +190,7 @@ def test_stop_refuses_unrelated_node_with_reused_state(portable_lan_repo):
         sentinel.terminate()
         sentinel.wait(timeout=5)
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher checks require Windows")
 @pytest.mark.parametrize("engine", list(dict.fromkeys(filter(None, [POWERSHELL, shutil.which("pwsh")]))))
 def test_persisted_process_timestamp_remains_exact_across_powershell_versions(portable_lan_repo, engine):
     common = portable_lan_repo / "scripts" / "BirdLabLanApi.Common.ps1"

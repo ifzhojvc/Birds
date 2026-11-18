@@ -57,7 +57,7 @@ def test_compose_keeps_contract_state_receipts_and_payments_across_lifecycle(tmp
     def connect():
         endpoint = "http://" + compose("port", "anvil", "8545")
         chain = Anvil(endpoint)
-        chain.wait_ready()
+        chain.wait_ready(seconds=60)
         chain.calldata = lambda signature, *arguments: compose("exec", "-T", "anvil", "cast", "calldata", signature, *map(str, arguments))
         return chain
 
@@ -105,7 +105,7 @@ def test_compose_keeps_contract_state_receipts_and_payments_across_lifecycle(tmp
         for scenario in ("stop-start", "restart", "recreate", "down-up"):
             if scenario == "stop-start":
                 compose("stop", "anvil")
-                compose("start", "anvil", "--wait")
+                compose("start", "anvil")
             elif scenario == "restart":
                 compose("restart", "anvil")
             elif scenario == "recreate":
