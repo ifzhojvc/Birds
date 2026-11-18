@@ -18,7 +18,8 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
     private async Task CheckHistoryAsync(CancellationToken token)
     {
         if (settings.Value.ChainId != 31337) return;
-        var history = await db.CryptoPayments.AsNoTracking().Where(p => p.ChainId == 31337 && p.ConfirmedAt != null).ToArrayAsync(token);
+        var current = await LocalNetworkPolicy.RequireCurrentAsync(db, settings.Value, token);
+        var history = await db.CryptoPayments.AsNoTracking().Where(p => p.ChainId == 31337 && p.NetworkInstanceId == current!.Id && p.ConfirmedAt != null).ToArrayAsync(token);
         await blockchain.CheckHistoryAsync(history, token);
     }
 
@@ -40,6 +41,7 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
     {
         var config = settings.Value.ResolveContracts();
         config.RequirePayments();
+        var currentNetwork = await LocalNetworkPolicy.RequireCurrentAsync(db, config, token);
         var wallet = WalletService.Address(walletAddress);
         if (!await db.UserWallets.AnyAsync(w => w.UserId == userId && w.WalletAddress == wallet && w.IsVerified, token)) throw new ApiException(403, "Спочатку підтвердіть володіння гаманцем.");
         var plan = await db.SubscriptionPlans.AsNoTracking().SingleOrDefaultAsync(p => p.Id == planId && p.IsActive && p.Price > 0, token) ?? throw new ApiException(400, "Оберіть активний платний тариф.");
@@ -51,7 +53,7 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
         var now = DateTimeOffset.UtcNow;
         var currentPlan = await db.SubscriptionPlans.AsNoTracking().SingleAsync(p => p.Id == planId, token);
         if (!currentPlan.IsActive || currentPlan.Price != plan.Price || currentPlan.DurationDays != plan.DurationDays || currentPlan.AnalysisLimit != plan.AnalysisLimit || currentPlan.Features != plan.Features) throw new ApiException(409, "Тариф змінився. Оновіть сторінку.");
-        var existing = await db.PaymentOrders.SingleOrDefaultAsync(o => o.UserId == userId && (o.Status == "Created" || o.Status == "Submitted") && o.ExpiresAt > now, token);
+        var existing = await db.PaymentOrders.SingleOrDefaultAsync(o => o.UserId == userId && (config.ChainId != 31337 || o.NetworkInstanceId == currentNetwork!.Id) && (o.Status == "Created" || o.Status == "Submitted") && o.ExpiresAt > now, token);
         if (existing is not null)
         {
             if (existing.PlanId == planId && existing.WalletAddress == wallet && existing.ReplaceCurrentPlan == replaceCurrentPlan) return existing;
@@ -61,7 +63,7 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
         if (different && !replaceCurrentPlan) throw new ApiException(409, "Зміна тарифу замінить невикористані дні й ліміти. Підтвердьте це перед створенням замовлення.");
         var order = new PaymentOrder
         {
-            UserId = userId, PlanId = planId, OrderId = wallet + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant(), WalletAddress = wallet,
+            NetworkInstanceId = currentNetwork?.Id, UserId = userId, PlanId = planId, OrderId = wallet + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant(), WalletAddress = wallet,
             ChainId = config.ChainId, TokenContractAddress = WalletService.Address(config.TokenAddress), PaymentContractAddress = WalletService.Address(config.PaymentContractAddress),
             Amount = plan.Price, TokenDecimals = config.TokenDecimals, DurationDays = plan.DurationDays, AnalysisLimit = plan.AnalysisLimit, Features = plan.Features,
             ReplaceCurrentPlan = replaceCurrentPlan, CreatedAt = now, ExpiresAt = now.AddMinutes(config.OrderMinutes)
@@ -79,12 +81,18 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
         await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(token) : null;
         await UserLock.AcquireAsync(db, userId, token);
         var order = await db.PaymentOrders.SingleOrDefaultAsync(o => o.Id == orderId && o.UserId == userId, token) ?? throw new ApiException(404, "Замовлення не знайдено.");
+        if (order.ChainId == 31337)
+        {
+            var current = await LocalNetworkPolicy.RequireCurrentAsync(db, settings.Value, token);
+            if (current is null || order.NetworkInstanceId != current.Id) throw new ApiException(409, "Це історичне замовлення іншого екземпляра мережі. Його транзакцію змінювати або оплачувати повторно не можна.", "archived_network");
+            if (await db.CryptoPayments.AnyAsync(p => p.ChainId == 31337 && p.TransactionHash == hash && p.NetworkInstanceId != current.Id, token)) throw new ApiException(409, "Цей хеш належить історичній локальній оплаті. Його не можна повторно підтвердити в новій мережі.", "historical_transaction_replay");
+        }
         var payment = await db.CryptoPayments.SingleOrDefaultAsync(p => p.PaymentOrderId == orderId, token);
         if (payment is null)
         {
             payment = new CryptoPayment
             {
-                PaymentOrderId = order.Id, UserId = userId, SubscriptionPlanId = order.PlanId, OrderId = order.OrderId,
+                NetworkInstanceId = order.NetworkInstanceId, PaymentOrderId = order.Id, UserId = userId, SubscriptionPlanId = order.PlanId, OrderId = order.OrderId,
                 WalletAddress = order.WalletAddress, BlockchainNetwork = order.ChainId == 84532 ? "Base Sepolia" : "Local Anvil", ChainId = order.ChainId,
                 TokenContractAddress = order.TokenContractAddress, PaymentContractAddress = order.PaymentContractAddress, Amount = order.Amount, TransactionHash = hash
             };
@@ -112,6 +120,7 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
     {
         var snapshot = await db.CryptoPayments.AsNoTracking().SingleAsync(p => p.Id == paymentId, token);
         var orderSnapshot = await db.PaymentOrders.AsNoTracking().SingleAsync(o => o.Id == snapshot.PaymentOrderId, token);
+        if (snapshot.ChainId == 31337 && await LocalNetworkPolicy.VerificationStateAsync(db, snapshot.ChainId, snapshot.NetworkInstanceId, token) == "ArchivedUnverified") return snapshot;
         PaymentEvidence evidence;
         try { await CheckHistoryAsync(token); evidence = await blockchain.VerifyAsync(orderSnapshot, snapshot.TransactionHash, token); }
         catch (ApiException error) { evidence = new("RpcUnavailable", error.Message); }
@@ -128,7 +137,7 @@ public sealed partial class PaymentService(BirdDbContext db, IBlockchainVerifier
         var subscription = await db.UserSubscriptions.SingleOrDefaultAsync(s => s.PaymentOrderId == order.Id, token);
         if (evidence.State == "Confirmed")
         {
-            var alreadyUsed = await db.CryptoPayments.AnyAsync(p => p.Id != payment.Id && p.ChainId == payment.ChainId && p.TransactionHash == payment.TransactionHash && p.LogIndex == evidence.LogIndex, token);
+            var alreadyUsed = await db.CryptoPayments.AnyAsync(p => p.Id != payment.Id && p.ChainId == payment.ChainId && (p.ChainId != 31337 || p.NetworkInstanceId == payment.NetworkInstanceId) && p.TransactionHash == payment.TransactionHash && p.LogIndex == evidence.LogIndex, token);
             if (alreadyUsed) throw new ApiException(409, "Цю подію блокчейна вже оброблено.");
             if (!await db.UserWallets.AnyAsync(w => w.UserId == order.UserId && w.WalletAddress == order.WalletAddress && w.IsVerified, token)) throw new ApiException(403, "Гаманець більше не підтверджений.");
             var now = DateTimeOffset.UtcNow;

@@ -29,7 +29,7 @@ public sealed class SubscriptionsController(BirdDbContext db, CurrentUser curren
         var config = settings.Value;
         try { config = config.ResolveContracts(); }
         catch (ApiException) { }
-        return Ok(new { config.Enabled, config.TestMode, config.ChainId, rpcUrl = config.PublicRpcUrl, config.TokenAddress, config.PaymentContractAddress, config.TokenDecimals, config.Confirmations, config.ExplorerUrl });
+        return Ok(new { config.Enabled, config.TestMode, config.ChainId, config.NetworkInstanceId, rpcUrl = config.PublicRpcUrl, config.TokenAddress, config.PaymentContractAddress, config.TokenDecimals, config.Confirmations, config.ExplorerUrl });
     }
     [AllowAnonymous, HttpGet("readiness")]
     public Task<PaymentReadiness> Readiness(CancellationToken token) => payments.ReadinessAsync(token);
@@ -41,13 +41,13 @@ public sealed class SubscriptionsController(BirdDbContext db, CurrentUser curren
     public async Task<IActionResult> Order(CreateOrder input, CancellationToken token)
     {
         var order = await payments.CreateAsync(current.Id, input.PlanId, input.WalletAddress, input.ReplaceCurrentPlan, token);
-        return Created($"/api/subscriptions/orders/{order.Id}", OrderView(order));
+        return Created($"/api/subscriptions/orders/{order.Id}", await OrderView(order, token));
     }
     [HttpGet("orders/{id:guid}")]
     public async Task<IActionResult> GetOrder(Guid id, CancellationToken token)
     {
         var order = await db.PaymentOrders.AsNoTracking().SingleOrDefaultAsync(o => o.Id == id && o.UserId == current.Id, token) ?? throw new ApiException(404, "Замовлення не знайдено.");
-        return Ok(OrderView(order));
+        return Ok(await OrderView(order, token));
     }
     [HttpPost("payments/verify"), EnableRateLimiting("payments")]
     public async Task<IActionResult> Verify(VerifyPayment input, CancellationToken token)
@@ -55,7 +55,7 @@ public sealed class SubscriptionsController(BirdDbContext db, CurrentUser curren
         var payment = await payments.SubmitAsync(current.Id, input.OrderId, input.TransactionHash, token);
         var result = await payments.ProcessAsync(payment.Id, token);
         var decimals = await db.PaymentOrders.Where(o => o.Id == result.PaymentOrderId).Select(o => o.TokenDecimals).SingleAsync(token);
-        return Ok(PaymentView(result, decimals));
+        return Ok(PaymentView(result, decimals, await LocalNetworkPolicy.VerificationStateAsync(db, result.ChainId, result.NetworkInstanceId, token)));
     }
     [HttpGet("payments")]
     public async Task<IActionResult> Payments(CancellationToken token)
@@ -63,8 +63,13 @@ public sealed class SubscriptionsController(BirdDbContext db, CurrentUser curren
         var rows = await db.CryptoPayments.AsNoTracking().Where(p => p.UserId == current.Id).OrderByDescending(p => p.CreatedAt).Take(200).ToArrayAsync(token);
         var ids = rows.Select(p => p.PaymentOrderId).ToArray();
         var decimals = await db.PaymentOrders.Where(o => ids.Contains(o.Id)).ToDictionaryAsync(o => o.Id, o => o.TokenDecimals, token);
-        return Ok(rows.Select(p => PaymentView(p, decimals[p.PaymentOrderId])));
+        var networks = await db.LocalNetworkInstances.AsNoTracking().ToDictionaryAsync(n => n.Id, n => n.Phase, token);
+        return Ok(rows.Select(p => PaymentView(p, decimals[p.PaymentOrderId], p.ChainId != 31337 ? "Deployed" : p.NetworkInstanceId is { } networkId && networks.TryGetValue(networkId, out var phase) ? phase : "UnassignedLegacy")));
     }
-    private static object OrderView(Models.PaymentOrder o) => new { o.Id, o.OrderId, o.PlanId, o.WalletAddress, o.ChainId, o.TokenContractAddress, o.PaymentContractAddress, amount = o.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture), o.TokenDecimals, o.DurationDays, o.AnalysisLimit, features = SubscriptionService.Features(o.Features), status = o.Status == "Created" && o.ExpiresAt <= DateTimeOffset.UtcNow ? "Expired" : o.Status, o.CreatedAt, o.ExpiresAt, o.ReplaceCurrentPlan };
-    private static object PaymentView(Models.CryptoPayment p, int decimals) => new { p.Id, p.PaymentOrderId, p.OrderId, p.SubscriptionPlanId, p.WalletAddress, p.BlockchainNetwork, p.ChainId, p.TokenContractAddress, p.PaymentContractAddress, amount = p.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture), p.TransactionHash, p.BlockNumber, p.LogIndex, p.Status, p.Error, p.CreatedAt, p.ConfirmedAt, explorerUrl = p.ChainId == 84532 ? $"https://sepolia.basescan.org/tx/{p.TransactionHash}" : null, tokenDecimals = decimals };
+    private async Task<object> OrderView(Models.PaymentOrder o, CancellationToken token)
+    {
+        var verificationState = await LocalNetworkPolicy.VerificationStateAsync(db, o.ChainId, o.NetworkInstanceId, token);
+        return new { o.NetworkInstanceId, isHistorical = LocalNetworkPolicy.Historical(verificationState), verificationState, o.Id, o.OrderId, o.PlanId, o.WalletAddress, o.ChainId, o.TokenContractAddress, o.PaymentContractAddress, amount = o.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture), o.TokenDecimals, o.DurationDays, o.AnalysisLimit, features = SubscriptionService.Features(o.Features), status = o.Status == "Created" && o.ExpiresAt <= DateTimeOffset.UtcNow ? "Expired" : o.Status, o.CreatedAt, o.ExpiresAt, o.ReplaceCurrentPlan };
+    }
+    private static object PaymentView(Models.CryptoPayment p, int decimals, string verificationState) => new { p.NetworkInstanceId, isHistorical = LocalNetworkPolicy.Historical(verificationState), verificationState, p.Id, p.PaymentOrderId, p.OrderId, p.SubscriptionPlanId, p.WalletAddress, p.BlockchainNetwork, p.ChainId, p.TokenContractAddress, p.PaymentContractAddress, amount = p.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture), p.TransactionHash, p.BlockNumber, p.LogIndex, p.Status, p.Error, p.CreatedAt, p.ConfirmedAt, explorerUrl = p.ChainId == 84532 ? $"https://sepolia.basescan.org/tx/{p.TransactionHash}" : null, tokenDecimals = decimals };
 }

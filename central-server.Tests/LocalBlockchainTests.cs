@@ -25,7 +25,7 @@ public sealed partial class BlockchainRpcTests
             Config.LocalDeploymentPath = Path.Combine(files.Folder, "deployment.json");
             Document = JsonSerializer.SerializeToNode(new
             {
-                version = 1, testOnly = true, chainId = 31337, tokenDecimals = 6,
+                networkInstanceId = Config.NetworkInstanceId, version = 1, testOnly = true, chainId = 31337, tokenDecimals = 6,
                 tokenAddress = Config.TokenAddress, paymentContractAddress = Config.PaymentContractAddress,
                 ownerAddress = "0x3333333333333333333333333333333333333333",
                 tokenDeploymentTransactionHash = Hash('7'), deploymentTransactionHash = Hash('8'),
@@ -91,7 +91,7 @@ public sealed partial class BlockchainRpcTests
         }
         public CryptoPayment Paid() => new()
         {
-            ChainId = 31337, TokenContractAddress = Config.TokenAddress, PaymentContractAddress = Config.PaymentContractAddress,
+            NetworkInstanceId = Config.NetworkInstanceId, ChainId = 31337, TokenContractAddress = Config.TokenAddress, PaymentContractAddress = Config.PaymentContractAddress,
             TransactionHash = Hash('c'), BlockNumber = 9, BlockHash = Hash('f'), ConfirmedAt = DateTimeOffset.UtcNow, Status = "Confirmed"
         };
     }
@@ -153,7 +153,7 @@ public sealed partial class BlockchainRpcTests
             await verifier.CheckConfigurationAsync(1, 5_000_000, default);
             var pending = await verifier.VerifyAsync(new PaymentOrder
             {
-                ChainId = 31337, TokenContractAddress = local.Config.TokenAddress, PaymentContractAddress = local.Config.PaymentContractAddress,
+                NetworkInstanceId = local.Config.NetworkInstanceId, ChainId = 31337, TokenContractAddress = local.Config.TokenAddress, PaymentContractAddress = local.Config.PaymentContractAddress,
                 PlanId = 1, Amount = 5_000_000
             }, Hash('c'), default);
             Assert.Equal("Pending", pending.State);
@@ -280,7 +280,7 @@ public sealed partial class BlockchainRpcTests
         Assert.Empty(local.Config.TokenAddress);
         await using var factory = new SubscriptionApiFactory(configuration: new Dictionary<string, string?>
         {
-            ["Blockchain:ChainId"] = "31337", ["Blockchain:TokenAddress"] = "", ["Blockchain:PaymentContractAddress"] = "",
+            ["Blockchain:NetworkInstanceId"] = SubscriptionTests.NetworkId.ToString(), ["Blockchain:ChainId"] = "31337", ["Blockchain:TokenAddress"] = "", ["Blockchain:PaymentContractAddress"] = "",
             ["Blockchain:LocalDeploymentPath"] = local.Config.LocalDeploymentPath,
         });
         using var client = await factory.Client();
@@ -331,7 +331,7 @@ public sealed class LocalPaymentSafetyTests
         if (scenario == "history") chain.HistoryError = new ApiException(503, "Історія мережі не збігається.");
         await using var factory = new SubscriptionApiFactory(configuration: new Dictionary<string, string?>
         {
-            ["Blockchain:Enabled"] = scenario == "disabled" ? "false" : "true", ["Blockchain:ChainId"] = "31337",
+            ["Blockchain:NetworkInstanceId"] = SubscriptionTests.NetworkId.ToString(), ["Blockchain:Enabled"] = scenario == "disabled" ? "false" : "true", ["Blockchain:ChainId"] = "31337",
             ["Blockchain:AllowLocalAnvil"] = "true", ["Blockchain:TokenAddress"] = SubscriptionTests.Options().TokenAddress,
             ["Blockchain:PaymentContractAddress"] = SubscriptionTests.Options().PaymentContractAddress,
         }, configureServices: services => services.AddSingleton<IBlockchainVerifier>(chain));
@@ -353,13 +353,13 @@ public sealed class LocalPaymentSafetyTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => LocalBlockchainGuard.WriteAsync(db, "", default));
         await LocalBlockchainGuard.WriteAsync(db, deployment, default);
         using (var json = JsonDocument.Parse(File.ReadAllText(guard))) Assert.False(json.RootElement.GetProperty("hasLocalPaymentHistory").GetBoolean());
-        var order = new PaymentOrder { UserId = TestAccount.UserId, ChainId = 31337 };
+        var order = new PaymentOrder { UserId = TestAccount.UserId, ChainId = 31337, NetworkInstanceId = SubscriptionTests.NetworkId };
         db.PaymentOrders.Add(order);
         await db.SaveChangesAsync();
         await LocalBlockchainGuard.WriteAsync(db, deployment, default);
         db.PaymentOrders.Remove(order);
         await db.SaveChangesAsync();
-        await LocalBlockchainGuard.WriteAsync(db, deployment, default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => LocalBlockchainGuard.WriteAsync(db, deployment, default));
         using (var json = JsonDocument.Parse(File.ReadAllText(guard))) Assert.True(json.RootElement.GetProperty("hasLocalPaymentHistory").GetBoolean());
         File.WriteAllText(guard, "broken");
         await Assert.ThrowsAnyAsync<JsonException>(() => LocalBlockchainGuard.WriteAsync(db, deployment, default));

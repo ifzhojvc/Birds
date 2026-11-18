@@ -30,7 +30,13 @@ services:
   blockchain-guard:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-central
     environment:
+      Blockchain__NetworkInstanceId: ''
       ConnectionStrings__BirdLab: 'Server=sql,1433;Database=${SUBSCRIPTION_TEST_DATABASE:-BirdLabSubscriptionIntegration};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+  blockchain-bind:
+    image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-central
+    environment:
+      ConnectionStrings__BirdLab: 'Server=sql,1433;Database=${SUBSCRIPTION_TEST_DATABASE:-BirdLabSubscriptionIntegration};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+      Blockchain__NetworkInstanceId: ''
   blockchain-init:
     image: ${SUBSCRIPTION_TEST_IMAGE_PREFIX:-birds}-blockchain-init
     command: [--rpc, 'http://anvil:8545', --docker-network, --no-build, --deployment, /blockchain/deployment.json, --guard, /blockchain/sql-guard.json]
@@ -43,6 +49,7 @@ services:
       RabbitMQ__VirtualHost: ${SUBSCRIPTION_TEST_VHOST:-birdlab}
       Blockchain__PublicRpcUrl: http://127.0.0.1:${SUBSCRIPTION_TEST_RPC_PORT:-18545}
       Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+      Blockchain__NetworkInstanceId: ''
     ports: !override
       - '127.0.0.1:${SUBSCRIPTION_TEST_PORT:-5110}:5100'
   anvil:

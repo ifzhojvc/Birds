@@ -102,11 +102,11 @@ public sealed class BlockchainVerifier(IOptions<BlockchainOptions> settings) : I
     public async Task CheckHistoryAsync(IReadOnlyCollection<CryptoPayment> history, CancellationToken token)
     {
         if (settings.Value.ChainId != 31337) return;
-        var (config, _) = Configuration();
+        var (config, deployment) = Configuration();
         var web3 = new Web3(config.RpcUrl);
         foreach (var payment in history)
         {
-            if (!Same(payment.PaymentContractAddress, config.PaymentContractAddress) || !Same(payment.TokenContractAddress, config.TokenAddress) || payment.BlockNumber is null || !LocalDeployment.Hash(payment.BlockHash)) throw HistoryMismatch();
+            if (payment.NetworkInstanceId != deployment!.NetworkInstanceId || !Same(payment.PaymentContractAddress, config.PaymentContractAddress) || !Same(payment.TokenContractAddress, config.TokenAddress) || payment.BlockNumber is null || !LocalDeployment.Hash(payment.BlockHash)) throw HistoryMismatch();
             var block = await Rpc(web3.Eth.Blocks.GetBlockWithTransactionsHashesByNumber.SendRequestAsync(new BlockParameter(new HexBigInteger(payment.BlockNumber.Value))), token);
             var receipt = await Rpc(web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(payment.TransactionHash), token);
             if (block is null || receipt is null || receipt.Status?.Value != 1 || !Same(block.BlockHash, payment.BlockHash) || !Same(receipt.BlockHash, payment.BlockHash) || !Same(receipt.TransactionHash, payment.TransactionHash) || !Same(receipt.To, config.PaymentContractAddress)) throw HistoryMismatch();
@@ -117,6 +117,7 @@ public sealed class BlockchainVerifier(IOptions<BlockchainOptions> settings) : I
     {
         var (config, deployment) = Configuration();
         if (order.ChainId != config.ChainId || !Same(order.TokenContractAddress, config.TokenAddress) || !Same(order.PaymentContractAddress, config.PaymentContractAddress)) return new("Rejected", "Заказ не відповідає налаштованій тестовій мережі.");
+        if (deployment is not null && order.NetworkInstanceId != deployment.NetworkInstanceId) return new("RpcUnavailable", "Замовлення належить іншому екземпляру локальної мережі.");
         var web3 = new Web3(config.RpcUrl);
         if ((await Rpc(web3.Eth.ChainId.SendRequestAsync(), token)).Value != order.ChainId) return new("RpcUnavailable", "RPC повернув іншу мережу.");
         if (deployment is not null) await CheckConfigurationAsync(order.PlanId, order.Amount, token);

@@ -21,7 +21,7 @@ public sealed class SubscriptionMonitor(IServiceScopeFactory scopes, IOptions<Bl
                     {
                         var db = scope.ServiceProvider.GetRequiredService<BirdDbContext>();
                         var now = DateTimeOffset.UtcNow;
-                        ids = await db.CryptoPayments.Where(p => p.Status != "Rejected" && p.Status != "ReviewRequired" && p.NextCheckAt <= now).OrderBy(p => p.NextCheckAt).Select(p => p.Id).Take(30).ToArrayAsync(stoppingToken);
+                        ids = await db.CryptoPayments.Where(p => p.Status != "Rejected" && p.Status != "ReviewRequired" && p.NextCheckAt <= now && (p.ChainId != 31337 || db.LocalNetworkInstances.Any(n => n.Id == p.NetworkInstanceId && n.IsCurrent && n.Phase == "Deployed"))).OrderBy(p => p.NextCheckAt).Select(p => p.Id).Take(30).ToArrayAsync(stoppingToken);
                     }
                     foreach (var id in ids)
                     {

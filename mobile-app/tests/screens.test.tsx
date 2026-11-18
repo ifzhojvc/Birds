@@ -221,3 +221,26 @@ it("shows the subscription and recorded payments, then logs out locally during a
   expect(await screen.findByRole("alert")).toHaveTextContent(/Вихід на пристрої виконано/);
   expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith("birdlab.auth.session");
 });
+
+
+it("shows preserved PRO rights and historical payments without a new confirmation", async () => {
+  mockHttp((url) => {
+    if (url.pathname === "/api/subscriptions/me") return json({
+      ...access, planId: 1, plan: "PRO", analysisLimit: 100, analysesUsed: 1, remaining: 99,
+      endDate: "2026-12-16T18:00:28.314206Z", accessSource: "LegacyLocalSnapshot", verificationState: "ArchivedUnverified",
+    });
+    if (url.pathname === "/api/subscriptions/payments") return json([{
+      id: "historical-pro", subscriptionPlanId: 1, amount: "5000000", tokenDecimals: 6,
+      status: "Confirmed", blockchainNetwork: "Local Anvil", createdAt: access.startDate,
+      transactionHash: "0xhistorical-payment", isHistorical: true, verificationState: "ArchivedUnverified",
+    }]);
+  });
+  await signedIn();
+  fireEvent.press(screen.getByText("Інформація"));
+  press("Мій тариф і платежі");
+  expect(await screen.findByText(/Права збережено з історичної локальної оплати/)).toBeOnTheScreen();
+  expect(screen.getByText(/залишилось 99/)).toBeOnTheScreen();
+  expect(await screen.findByText("Історичний статус: Підтверджено сервером")).toBeOnTheScreen();
+  expect(screen.getByText(/У поточній мережі ця транзакція не підтверджувалася/)).toBeOnTheScreen();
+  expect(screen.getByText("0xhistorical-payment")).toBeOnTheScreen();
+});

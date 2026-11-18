@@ -23,17 +23,20 @@ public sealed class FakeBlockchain : IBlockchainVerifier
 
 public sealed class SubscriptionTests
 {
-    internal static BlockchainOptions Options() => new() { Enabled = true, AllowLocalAnvil = true, ChainId = 31337, TokenAddress = "0x1111111111111111111111111111111111111111", PaymentContractAddress = "0x2222222222222222222222222222222222222222", Confirmations = 2 };
+    internal static readonly Guid NetworkId = Guid.Parse("d171cae3-dfb3-45b0-a4ab-fde099106339");
+    internal static BlockchainOptions Options() => new() { NetworkInstanceId = NetworkId, Enabled = true, AllowLocalAnvil = true, ChainId = 31337, TokenAddress = "0x1111111111111111111111111111111111111111", PaymentContractAddress = "0x2222222222222222222222222222222222222222", Confirmations = 2 };
     internal static async Task<BirdDbContext> Database()
     {
         var db = new BirdDbContext(new DbContextOptionsBuilder<BirdDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         await db.Database.EnsureCreatedAsync();
+        db.LocalNetworkInstances.Add(new LocalNetworkInstance { Id = NetworkId, IsCurrent = true, Phase = "Deployed" });
         db.Users.Add(new ApplicationUser { Id = TestAccount.UserId, UserName = "unit@example.test" });
         await db.SaveChangesAsync();
         return db;
     }
     internal static async Task<(PaymentService Service, PaymentOrder Order, FakeBlockchain Chain)> Order(BirdDbContext db, int plan = 1, bool replace = false)
     {
+        if (!await db.LocalNetworkInstances.AnyAsync()) { db.LocalNetworkInstances.Add(new LocalNetworkInstance { Id = NetworkId, IsCurrent = true, Phase = "Deployed" }); await db.SaveChangesAsync(); }
         var wallet = "0x3333333333333333333333333333333333333333";
         if (!await db.UserWallets.AnyAsync()) { db.UserWallets.Add(new UserWallet { UserId = TestAccount.UserId, WalletAddress = wallet, IsVerified = true }); await db.SaveChangesAsync(); }
         var chain = new FakeBlockchain();

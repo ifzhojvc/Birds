@@ -24,6 +24,7 @@ services:
     environment:
       ConnectionStrings__BirdLab: 'Server=sql,1433;Database=AIBirdLab;User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
       Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+      Blockchain__NetworkInstanceId: ${BLOCKCHAIN_NETWORK_INSTANCE_ID:-}
     volumes:
       - blockchain-config:/blockchain
     depends_on:
@@ -34,7 +35,7 @@ services:
     build:
       context: .
       dockerfile: scripts/Dockerfile.blockchain
-    command: [--rpc, 'http://anvil:8545', --docker-network, --no-build, --deployment, /blockchain/deployment.json, --legacy, /legacy/local-deployment.json, --guard, /blockchain/sql-guard.json]
+    command: [--rpc, 'http://anvil:8545', --docker-network, --no-build, --deployment, /blockchain/deployment.json, --legacy, /legacy/local-deployment.json, --guard, /blockchain/sql-guard.json, --network-instance-id, '${BLOCKCHAIN_NETWORK_INSTANCE_ID:-}', --transition-id, '${BLOCKCHAIN_TRANSITION_ID:-}']
     volumes:
       - blockchain-config:/blockchain
       - ./verification:/legacy:ro
@@ -42,6 +43,31 @@ services:
       anvil:
         condition: service_healthy
       blockchain-guard:
+        condition: service_completed_successfully
+    restart: on-failure:3
+  blockchain-bind:
+    build:
+      context: .
+      dockerfile: central-server/Dockerfile
+    command: [--bind-local-network]
+    environment:
+      ConnectionStrings__BirdLab: 'Server=sql,1433;Database=AIBirdLab;User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True'
+      Blockchain__Enabled: 'true'
+      Blockchain__TestMode: 'true'
+      Blockchain__AllowLocalAnvil: 'true'
+      Blockchain__ChainId: '31337'
+      Blockchain__RpcUrl: http://anvil:8545
+      Blockchain__TokenAddress: ''
+      Blockchain__PaymentContractAddress: ''
+      Blockchain__TokenDecimals: '6'
+      Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+      Blockchain__NetworkInstanceId: ${BLOCKCHAIN_NETWORK_INSTANCE_ID:-}
+    volumes:
+      - blockchain-config:/blockchain
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      blockchain-init:
         condition: service_completed_successfully
     restart: on-failure:3
   central:
@@ -59,6 +85,7 @@ services:
       Blockchain__Confirmations: '3'
       Blockchain__PollSeconds: '2'
       Blockchain__LocalDeploymentPath: /blockchain/deployment.json
+      Blockchain__NetworkInstanceId: ${BLOCKCHAIN_NETWORK_INSTANCE_ID:-}
     volumes:
       - blockchain-config:/blockchain:ro
 volumes:

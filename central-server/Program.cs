@@ -24,7 +24,7 @@ if (args.Contains("--healthcheck"))
     return;
 }
 
-var maintenance = args.Any(a => a is "--migrate-db" or "--import-sqlite" or "--seed-catalog" or "--blockchain-guard");
+var maintenance = args.Any(a => a is "--migrate-db" or "--import-sqlite" or "--seed-catalog" or "--blockchain-guard" or "--migrate-schema-only" or "--verify-schema" or "--inspect-local-transition" or "--prepare-local-transition" or "--bind-local-network");
 var builder = WebApplication.CreateBuilder(maintenance ? [] : args);
 builder.Services.AddDbContext<BirdDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("BirdLab") ?? throw new InvalidOperationException("ConnectionStrings:BirdLab is required.")));
 builder.Services.AddControllers();
@@ -54,6 +54,7 @@ builder.Services.Configure<BlockchainOptions>(builder.Configuration.GetSection("
 builder.Services.AddScoped<WalletService>();
 builder.Services.AddScoped<SubscriptionService>();
 builder.Services.AddScoped<PaymentService>();
+builder.Services.AddScoped<LocalTransitionService>();
 builder.Services.AddSingleton<IBlockchainVerifier, BlockchainVerifier>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -95,7 +96,29 @@ var app = builder.Build();
 if (args.Contains("--blockchain-guard"))
 {
     using var scope = app.Services.CreateScope();
-    await LocalBlockchainGuard.WriteAsync(scope.ServiceProvider.GetRequiredService<BirdDbContext>(), builder.Configuration["Blockchain:LocalDeploymentPath"] ?? "", CancellationToken.None);
+    await LocalBlockchainGuard.WriteAsync(scope.ServiceProvider.GetRequiredService<BirdDbContext>(), builder.Configuration["Blockchain:LocalDeploymentPath"] ?? "", CancellationToken.None, builder.Configuration.GetValue<Guid?>("Blockchain:NetworkInstanceId"));
+    return;
+}
+if (args.Any(a => a is "--migrate-schema-only" or "--verify-schema" or "--inspect-local-transition" or "--prepare-local-transition" or "--bind-local-network"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<BirdDbContext>();
+    var transitions = scope.ServiceProvider.GetRequiredService<LocalTransitionService>();
+    if (args.Contains("--migrate-schema-only")) await db.Database.MigrateAsync();
+    else if (args.Contains("--verify-schema"))
+    {
+        if (db.Database.HasPendingModelChanges() || (await db.Database.GetPendingMigrationsAsync()).Any()) throw new InvalidOperationException("The additive database schema is not current.");
+        Console.WriteLine("Schema verified without catalog or tariff seeding.");
+    }
+    else if (args.Contains("--inspect-local-transition")) Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(await transitions.InspectAsync(DateTimeOffset.UtcNow, CancellationToken.None), LocalTransitionService.JsonOptions));
+    else if (args.Contains("--bind-local-network")) await transitions.BindAsync(CancellationToken.None);
+    else
+    {
+        var index = Array.IndexOf(args, "--prepare-local-transition");
+        if (index + 1 >= args.Length) throw new InvalidOperationException("Provide the explicitly approved transition JSON plan.");
+        var plan = System.Text.Json.JsonSerializer.Deserialize<LocalTransitionPlan>(await File.ReadAllTextAsync(args[index + 1]), LocalTransitionService.JsonOptions) ?? throw new InvalidOperationException("The approved transition plan is empty.");
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(await transitions.PrepareAsync(plan, CancellationToken.None), LocalTransitionService.JsonOptions));
+    }
     return;
 }
 if (args.Contains("--migrate-db") || args.Contains("--import-sqlite") || args.Contains("--seed-catalog"))

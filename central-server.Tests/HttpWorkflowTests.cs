@@ -177,7 +177,7 @@ public sealed class HttpWorkflowTests
         var chain = new FakeBlockchain { Evidence = new("Pending") };
         await using var factory = new SubscriptionApiFactory(database.Db.Database.GetConnectionString(), new Dictionary<string, string?>
         {
-            ["Blockchain:Enabled"] = "true", ["Blockchain:ChainId"] = "31337", ["Blockchain:AllowLocalAnvil"] = "true",
+            ["Blockchain:NetworkInstanceId"] = SubscriptionTests.NetworkId.ToString(), ["Blockchain:Enabled"] = "true", ["Blockchain:ChainId"] = "31337", ["Blockchain:AllowLocalAnvil"] = "true",
             ["Blockchain:TokenAddress"] = config.TokenAddress, ["Blockchain:PaymentContractAddress"] = config.PaymentContractAddress,
         }, services => services.AddSingleton<IBlockchainVerifier>(chain));
         using var client = await factory.Client();

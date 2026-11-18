@@ -19,6 +19,9 @@ public sealed class BirdDbContext(DbContextOptions<BirdDbContext> options) : Ide
     public DbSet<CryptoPayment> CryptoPayments => Set<CryptoPayment>();
     public DbSet<UserWallet> UserWallets => Set<UserWallet>();
     public DbSet<WalletNonce> WalletNonces => Set<WalletNonce>();
+    public DbSet<LocalNetworkInstance> LocalNetworkInstances => Set<LocalNetworkInstance>();
+    public DbSet<LocalTransitionBatch> LocalTransitionBatches => Set<LocalTransitionBatch>();
+    public DbSet<LegacyEntitlementProvenance> LegacyEntitlementProvenances => Set<LegacyEntitlementProvenance>();
     public DbSet<UsageRecord> UsageRecords => Set<UsageRecord>();
 
     protected override void OnModelCreating(ModelBuilder model)

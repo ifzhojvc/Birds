@@ -19,6 +19,8 @@ import {
 } from "../web3";
 import {
   formatToken,
+  historicalPaymentMessage,
+  paymentStatusLabel,
   paymentLabels,
   shortAddress,
   type CryptoPayment,
@@ -103,7 +105,8 @@ export default function Checkout() {
           .then((data) => {
             if (active) {
               setOrder(data);
-              setTransactionHash(saved.hash!);
+              if (data.isHistorical || data.verificationState === "ArchivedUnverified") setError("Замовлення належить попередній локальній мережі. Відкрийте історію платежів.");
+              else setTransactionHash(saved.hash!);
             }
           })
           .catch(() => {});
@@ -115,7 +118,7 @@ export default function Checkout() {
     };
   }, [storageKey]);
   useEffect(() => {
-    if (!order || !transactionHash) return;
+    if (!order || !transactionHash || order.isHistorical || order.verificationState === "ArchivedUnverified") return;
     let active = true;
     let pending = false;
     let finished = false;
@@ -134,10 +137,10 @@ export default function Checkout() {
         if (!active) return;
         setPayment(response);
         setError("");
-        finished = ["Confirmed", "Rejected", "ReviewRequired"].includes(
+        finished = !!response.isHistorical || response.verificationState === "ArchivedUnverified" || ["Confirmed", "Rejected", "ReviewRequired"].includes(
           response.status,
         );
-        if (response.status === "Confirmed") {
+        if (response.status === "Confirmed" && !response.isHistorical && response.verificationState !== "ArchivedUnverified") {
           await cache.invalidateQueries({ queryKey: ["/subscriptions/me"] });
           await cache.invalidateQueries({
             queryKey: ["/subscriptions/history"],
@@ -170,9 +173,12 @@ export default function Checkout() {
     }
   }
   async function requireReady(expected?: PaymentOrder) {
+    if (expected?.isHistorical || expected?.verificationState === "ArchivedUnverified") throw new Error("Історичне замовлення не можна оплачувати в новій мережі.");
     const readiness = await api.request<PaymentReadiness>("/subscriptions/readiness");
     if (!readiness.ready) throw new Error(readiness.message);
     const latest = await api.request<Network>("/subscriptions/network");
+    if (latest.chainId === 31337 && !latest.networkInstanceId) throw new Error("Ідентичність локальної мережі не підтверджено сервером.");
+    if (expected && (expected.networkInstanceId || null)?.toLowerCase() !== (latest.networkInstanceId || null)?.toLowerCase()) throw new Error("Замовлення належить іншому екземпляру мережі. Створіть нове замовлення.");
     if (chainId !== latest.chainId) throw new Error("Мережа гаманця не відповідає готовій платіжній мережі.");
     if (expected && (expected.chainId !== latest.chainId || expected.tokenContractAddress.toLowerCase() !== latest.tokenAddress.toLowerCase() || expected.paymentContractAddress.toLowerCase() !== latest.paymentContractAddress.toLowerCase()))
       throw new Error("Замовлення належить іншій конфігурації мережі. Перевірте історію платежів перед новою оплатою.");
@@ -195,6 +201,7 @@ export default function Checkout() {
   const samePayer =
     !order || order.walletAddress.toLowerCase() === address?.toLowerCase();
   const expired = !!order && Date.parse(order.expiresAt) <= now;
+  const historicalOrder = !!order?.isHistorical || order?.verificationState === "ArchivedUnverified";
   function resetOrder() {
     localStorage.removeItem(storageKey);
     setOrder(undefined);
@@ -215,10 +222,10 @@ export default function Checkout() {
         loading={plans.isLoading || networkQuery.isLoading}
         error={plans.error || networkQuery.error}
       >
-        {((expired && !transactionHash) || payment?.status === "Rejected") && (
+        {(historicalOrder || (expired && !transactionHash) || payment?.status === "Rejected") && (
           <div className="notice">
             <p>
-              {payment?.status === "Rejected"
+              {historicalOrder ? "Замовлення належить попередній локальній мережі. Його не можна оплачувати повторно." : payment?.status === "Rejected"
                 ? "Платіж не прийнято. Перевірте історію транзакцій перед новою спробою."
                 : "Строк замовлення минув. Не надсилайте оплату за цим замовленням."}
             </p>
@@ -464,6 +471,7 @@ export default function Checkout() {
                           !!busy ||
                           !rightNetwork ||
                           !samePayer ||
+                          historicalOrder ||
                           approved ||
                           !!transactionHash
                         }
@@ -514,6 +522,7 @@ export default function Checkout() {
                         className="button primary"
                         disabled={
                           !!busy ||
+                          historicalOrder ||
                           !approved ||
                           !consent ||
                           !rightNetwork ||
@@ -555,9 +564,9 @@ export default function Checkout() {
               )}
               {transactionHash && (
                 <div className="notice" role="status">
-                  <h3>{paymentLabels[payment?.status || "Pending"]}</h3>
+                  <h3>{payment ? paymentStatusLabel(payment) : paymentLabels.Pending}</h3>
                   <p>
-                    {payment?.status === "Confirmed"
+                    {payment?.isHistorical || payment?.verificationState === "ArchivedUnverified" ? historicalPaymentMessage : payment?.status === "Confirmed"
                       ? "Сервер перевірив блокчейн. Оплачений період збережено; якщо це продовження, він почнеться після поточного."
                       : payment?.error ||
                         "Сервер очікує транзакцію та необхідні підтвердження."}

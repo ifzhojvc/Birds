@@ -6,6 +6,9 @@ import { useAuth } from "../auth";
 import { useRemote } from "../api";
 import {
   featureLabels,
+  legacyAccessMessage,
+  historicalPaymentMessage,
+  paymentStatusLabel,
   formatToken,
   paymentLabels,
   type CryptoPayment,
@@ -123,6 +126,7 @@ export default function MySubscriptionScreen() {
               <Text style={s.link}>
                 {paymentLabels[access.data.status] || access.data.status}
               </Text>
+              {access.data.accessSource === "LegacyLocalSnapshot" && <Text style={s.muted}>{legacyAccessMessage}</Text>}
               <Text style={s.h2}>Використані аналізи</Text>
               <Text style={s.text}>
                 {access.data.analysesUsed} із {access.data.analysisLimit} ·
@@ -173,12 +177,13 @@ export default function MySubscriptionScreen() {
                 USDC
               </Text>
               <Text style={s.link}>
-                {paymentLabels[payment.status] || payment.status}
+                {paymentStatusLabel(payment)}
               </Text>
               <Text style={s.muted}>
                 {payment.blockchainNetwork} ·{" "}
                 {new Date(payment.createdAt).toLocaleString("uk-UA")}
               </Text>
+              {(payment.isHistorical || payment.verificationState === "ArchivedUnverified") && <Text style={s.muted}>{historicalPaymentMessage}</Text>}
               {!!payment.error && <Text style={s.muted}>{payment.error}</Text>}
               <Text selectable style={s.muted}>
                 {payment.transactionHash}

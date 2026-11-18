@@ -5,6 +5,9 @@ import { useApi } from "../api";
 import { PageTitle, State } from "../components/Common";
 import {
   featureLabels,
+  legacyAccessMessage,
+  historicalPaymentMessage,
+  paymentStatusLabel,
   paymentLabels,
   formatToken,
   shortAddress,
@@ -205,6 +208,7 @@ export function MySubscription() {
               <span className="eyebrow">ПОТОЧНИЙ ТАРИФ</span>
               <h2>{access.data.plan}</h2>
               <p>{paymentLabels[access.data.status] || access.data.status}</p>
+              {access.data.accessSource === "LegacyLocalSnapshot" && <p className="caption" role="status">{legacyAccessMessage}</p>}
             </div>
             <div>
               <strong>
@@ -297,15 +301,16 @@ export function Payments() {
                   {formatToken(p.amount, p.tokenDecimals)} тестових USDC
                 </strong>
                 <span
-                  className={`pill ${p.status === "Confirmed" ? "success" : ""}`}
+                  className={`pill ${p.status === "Confirmed" && !p.isHistorical && p.verificationState !== "ArchivedUnverified" ? "success" : ""}`}
                 >
-                  {paymentLabels[p.status] || p.status}
+                  {paymentStatusLabel(p)}
                 </span>
               </div>
               <p>
                 {p.blockchainNetwork} · {shortAddress(p.walletAddress)} ·{" "}
                 {new Date(p.createdAt).toLocaleString("uk-UA")}
               </p>
+              {(p.isHistorical || p.verificationState === "ArchivedUnverified") && <p className="caption">{historicalPaymentMessage}</p>}
               {p.error && <p role="status">{p.error}</p>}
               <code className="address">{p.transactionHash}</code>
               {p.explorerUrl && (

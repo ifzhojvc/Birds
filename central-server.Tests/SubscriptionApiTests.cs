@@ -50,7 +50,13 @@ public sealed class SubscriptionApiFactory(
     {
         var client = CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false });
         using var scope = Services.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<BirdDbContext>().Database.EnsureCreatedAsync();
+        var db = scope.ServiceProvider.GetRequiredService<BirdDbContext>();
+        await db.Database.EnsureCreatedAsync();
+        if (!await db.LocalNetworkInstances.AnyAsync())
+        {
+            db.LocalNetworkInstances.Add(new LocalNetworkInstance { Id = SubscriptionTests.NetworkId, IsCurrent = true, Phase = "Deployed" });
+            await db.SaveChangesAsync();
+        }
         return client;
     }
 }

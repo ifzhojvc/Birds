@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "../api";
 import Checkout from "./Checkout";
-import { MySubscription, Plans } from "./Account";
+import { MySubscription, Payments, Plans } from "./Account";
 import * as wallet from "../web3";
 import type {
   CryptoPayment,
@@ -327,4 +327,69 @@ describe("тестові криптопідписки — змодельован
     await waitFor(() => expect(screen.getByText("99 / 100")).toBeTruthy());
     expect(screen.getByRole("heading", { name: "PRO" })).toBeTruthy();
   });
+});
+
+
+it("shows the preserved PRO source without claiming a new blockchain confirmation", async () => {
+  const original = vi.mocked(api.request).getMockImplementation()!;
+  vi.mocked(api.request).mockImplementation(async (path, init) => path === "/subscriptions/me" ? {
+    planId: 1, plan: "PRO", status: "Active", analysisLimit: 100, analysesUsed: 1, remaining: 99,
+    features: ["image", "audio"], startDate: "2026-11-16T18:00:28.314206Z", endDate: "2026-12-16T18:00:28.314206Z",
+    accessSource: "LegacyLocalSnapshot", verificationState: "ArchivedUnverified", networkInstanceId: "legacy-instance",
+  } : original(path, init));
+  view(<MySubscription />, "/account");
+  expect(await screen.findByText(/Права збережено з історичної локальної оплати/)).toBeTruthy();
+  expect(screen.getByText("99 / 100")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "PRO" })).toBeTruthy();
+  expect(screen.queryByText(/Сервер перевірив блокчейн/)).toBeNull();
+});
+
+it("labels a recorded confirmed legacy payment as historical without a current success badge", async () => {
+  const original = vi.mocked(api.request).getMockImplementation()!;
+  vi.mocked(api.request).mockImplementation(async (path, init) => path === "/subscriptions/payments" ? [{
+    id: "legacy-payment", subscriptionPlanId: 1, amount: "5000000", tokenDecimals: 6, status: "Confirmed",
+    blockchainNetwork: "Local Anvil", walletAddress: address, transactionHash: "0xhistorical-hash",
+    createdAt: "2026-11-16T18:00:28.314206Z", isHistorical: true, verificationState: "ArchivedUnverified",
+  }] : original(path, init));
+  view(<Payments />, "/payments");
+  const recorded = await screen.findByText("Історичний статус: Підтверджено сервером");
+  expect(recorded.classList.contains("success")).toBe(false);
+  expect(screen.getByText(/У поточній мережі ця транзакція не підтверджувалася/)).toBeTruthy();
+  expect(screen.getByText("0xhistorical-hash")).toBeTruthy();
+  expect(wallet.payOrder).not.toHaveBeenCalled();
+});
+
+it("blocks an order from another instance with the same chain and contract addresses", async () => {
+  currentNetwork = { ...network, chainId: 31337, networkInstanceId: "instance-one" };
+  order = { ...order, chainId: 31337, networkInstanceId: "instance-one" };
+  vi.mocked(wallet.connectWallet).mockResolvedValue({ address, chainId: 31337 });
+  const user = await prepare();
+  currentNetwork = { ...currentNetwork, networkInstanceId: "instance-two" };
+  await user.click(screen.getByRole("button", { name: "Підтвердити дозвіл ERC-20" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("іншому екземпляру мережі");
+  expect(wallet.approveOrder).not.toHaveBeenCalled();
+  expect(wallet.payOrder).not.toHaveBeenCalled();
+});
+
+it("does not resume verification for an archived saved order", async () => {
+  localStorage.setItem("bird-payment:test-user:1", JSON.stringify({ orderId: order.id, hash: "0xold-payment" }));
+  const original = vi.mocked(api.request).getMockImplementation()!;
+  vi.mocked(api.request).mockImplementation(async (path, init) => path === `/subscriptions/orders/${order.id}`
+    ? { ...order, isHistorical: true, verificationState: "ArchivedUnverified", networkInstanceId: "legacy-instance" }
+    : original(path, init));
+  view();
+  expect(await screen.findByText(/Його не можна оплачувати повторно/)).toBeTruthy();
+  expect(vi.mocked(api.request).mock.calls.some(([path]) => path === "/subscriptions/payments/verify")).toBe(false);
+  expect(wallet.approveOrder).not.toHaveBeenCalled();
+});
+
+it("refuses a local network without an instance identity before creating an order", async () => {
+  currentNetwork = { ...network, chainId: 31337 };
+  vi.mocked(wallet.connectWallet).mockResolvedValue({ address, chainId: 31337 });
+  const user = view();
+  await user.click(await screen.findByRole("button", { name: "Підключити MetaMask" }));
+  await user.click(await screen.findByRole("button", { name: "Підписати повідомлення" }));
+  await user.click(await screen.findByRole("button", { name: "Створити замовлення PRO" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Ідентичність локальної мережі не підтверджено");
+  expect(vi.mocked(api.request).mock.calls.some(([path]) => path === "/subscriptions/orders")).toBe(false);
 });

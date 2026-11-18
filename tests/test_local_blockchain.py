@@ -418,3 +418,225 @@ def test_malformed_json_object_is_rejected_without_a_transaction(tmp_path):
         chain.deploy(deployment_path=target, build=False)
     assert not chain.sent
     assert not target.with_suffix(".json.lock").exists()
+
+
+NETWORK_INSTANCE = "11111111-1111-4111-8111-111111111111"
+LEGACY_INSTANCE = "22222222-2222-4222-8222-222222222222"
+TRANSITION_ID = "33333333-3333-4333-8333-333333333333"
+OTHER_INSTANCE = "44444444-4444-4444-8444-444444444444"
+
+
+def scoped_guard(transition=False):
+    active = {"networkInstanceId": NETWORK_INSTANCE, "phase": "Planned", "chainId": 31337, "authorization": None, "ordersAddresses": [], "confirmedPayments": []}
+    archives = []
+    if transition:
+        active["authorization"] = {"backupSha256": "b" * 64, "sourceFingerprint": "f" * 64, "legacyArchived": True, "transitionId": TRANSITION_ID}
+        archives = [{"networkInstanceId": LEGACY_INSTANCE, "phase": "ArchivedUnverified", "chainId": 31337, "ordersAddresses": [{"tokenAddress": TOKEN, "paymentContractAddress": CONTRACT}], "confirmedPayments": [{"transactionHash": "0x" + "e" * 64, "blockNumber": 700, "blockHash": "0x" + "f" * 64, "tokenAddress": TOKEN, "paymentContractAddress": CONTRACT}]}]
+    return {"version": 2, "hasLocalPaymentHistory": transition, "activeNetwork": active, "archivedNetworks": archives}
+
+
+def test_clean_sql_bootstrap_persists_its_assigned_network_identity(tmp_path):
+    chain = Chain()
+    guard = tmp_path / "guard.json"
+    atomic_json(guard, scoped_guard())
+    target = tmp_path / "deployment.json"
+    record = chain.deploy(deployment_path=target, guard_path=guard, build=False)
+    assert record["networkInstanceId"] == NETWORK_INSTANCE
+    assert chain.deploy(deployment_path=target, guard_path=guard, build=False) == record
+    assert len(chain.sent) == 3
+
+
+def test_explicit_approved_transition_preserves_archives_and_never_queries_lost_chain(tmp_path):
+    chain = Chain()
+    guard = tmp_path / "guard.json"
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps({"oldMetadataIsPreserved": True}))
+    source_guard = scoped_guard(transition=True)
+    atomic_json(guard, source_guard)
+    guard_before, legacy_before = guard.read_bytes(), legacy.read_bytes()
+    target = tmp_path / "deployment.json"
+    arguments = {"deployment_path": target, "legacy_path": legacy, "guard_path": guard, "network_instance_id": NETWORK_INSTANCE, "transition_id": TRANSITION_ID, "build": False}
+    record = chain.deploy(**arguments)
+    assert record["networkInstanceId"] == NETWORK_INSTANCE
+    assert record["transitionId"] == TRANSITION_ID
+    assert record["sourceBackupSha256"] == "b" * 64
+    assert record["sourceFingerprint"] == "f" * 64
+    assert guard.read_bytes() == guard_before and legacy.read_bytes() == legacy_before
+    assert chain.deploy(**arguments) == record
+    assert len(chain.sent) == 3
+    source_guard["activeNetwork"].update({"phase": "Deployed", "deployment": record})
+    atomic_json(guard, source_guard)
+    assert chain.deploy(deployment_path=target, guard_path=guard, network_instance_id=NETWORK_INSTANCE, build=False) == record
+    assert len(chain.sent) == 3
+
+
+@pytest.mark.parametrize("scenario", [
+    "unsupported-version", "downgraded-version", "invalid-history", "missing-active", "missing-archives", "bad-identity", "zero-identity", "wrong-requested-identity", "wrong-chain", "wrong-phase", "bad-orders", "bad-payments", "planned-orders", "planned-payments", "planned-deployment", "bad-archive", "bad-archive-phase", "bad-archive-chain", "archive-equals-current", "duplicate-archive", "bad-archive-orders", "bad-archive-payments", "empty-archive", "hidden-history", "missing-authorization", "unarchived-authorization", "bad-backup", "bad-fingerprint", "bad-transition", "wrong-transition", "missing-network-approval", "missing-transition-approval", "missing-archival-evidence", "deployed-without-manifest", "deployed-wrong-instance", "deployed-empty-manifest",
+])
+def test_transition_guard_rejects_ambiguous_or_unapproved_state_without_sending(tmp_path, scenario):
+    chain = Chain()
+    guard = scoped_guard(transition=True)
+    active, archive = guard["activeNetwork"], guard["archivedNetworks"][0]
+    identity, transition = NETWORK_INSTANCE, TRANSITION_ID
+    if scenario == "unsupported-version":
+        guard["version"] = 3
+    elif scenario == "downgraded-version":
+        guard["version"] = 1
+    elif scenario == "invalid-history":
+        guard["hasLocalPaymentHistory"] = "true"
+    elif scenario == "missing-active":
+        guard["activeNetwork"] = None
+    elif scenario == "missing-archives":
+        guard["archivedNetworks"] = None
+    elif scenario == "bad-identity":
+        active["networkInstanceId"] = "not-an-identity"
+    elif scenario == "zero-identity":
+        active["networkInstanceId"] = "00000000-0000-0000-0000-000000000000"
+    elif scenario == "wrong-requested-identity":
+        identity = OTHER_INSTANCE
+    elif scenario == "wrong-chain":
+        active["chainId"] = 1
+    elif scenario == "wrong-phase":
+        active["phase"] = "Unknown"
+    elif scenario == "bad-orders":
+        active["ordersAddresses"] = None
+    elif scenario == "bad-payments":
+        active["confirmedPayments"] = None
+    elif scenario == "planned-orders":
+        active["ordersAddresses"] = archive["ordersAddresses"]
+    elif scenario == "planned-payments":
+        active["confirmedPayments"] = archive["confirmedPayments"]
+    elif scenario == "planned-deployment":
+        active["deployment"] = {"networkInstanceId": NETWORK_INSTANCE}
+    elif scenario == "bad-archive":
+        guard["archivedNetworks"] = [None]
+    elif scenario == "bad-archive-phase":
+        archive["phase"] = "Current"
+    elif scenario == "bad-archive-chain":
+        archive["chainId"] = 1
+    elif scenario == "archive-equals-current":
+        archive["networkInstanceId"] = NETWORK_INSTANCE
+    elif scenario == "duplicate-archive":
+        guard["archivedNetworks"].append(copy.deepcopy(archive))
+    elif scenario == "bad-archive-orders":
+        archive["ordersAddresses"] = None
+    elif scenario == "bad-archive-payments":
+        archive["confirmedPayments"] = None
+    elif scenario == "empty-archive":
+        archive.update({"ordersAddresses": [], "confirmedPayments": []})
+    elif scenario == "hidden-history":
+        guard["hasLocalPaymentHistory"] = False
+    elif scenario == "missing-authorization":
+        active["authorization"] = None
+    elif scenario == "unarchived-authorization":
+        active["authorization"]["legacyArchived"] = False
+    elif scenario == "bad-backup":
+        active["authorization"]["backupSha256"] = "not-a-digest"
+    elif scenario == "bad-fingerprint":
+        active["authorization"]["sourceFingerprint"] = None
+    elif scenario == "bad-transition":
+        active["authorization"]["transitionId"] = None
+    elif scenario == "wrong-transition":
+        transition = OTHER_INSTANCE
+    elif scenario == "missing-network-approval":
+        identity = None
+    elif scenario == "missing-transition-approval":
+        transition = None
+    elif scenario == "missing-archival-evidence":
+        guard["archivedNetworks"] = []
+    elif scenario == "deployed-without-manifest":
+        active["phase"] = "Deployed"
+    elif scenario == "deployed-wrong-instance":
+        active.update({"phase": "Deployed", "deployment": {"networkInstanceId": OTHER_INSTANCE}})
+    else:
+        active.update({"phase": "Deployed", "deployment": {}})
+    path = tmp_path / "guard.json"
+    atomic_json(path, guard)
+    with pytest.raises(RuntimeError):
+        chain.deploy(deployment_path=tmp_path / "deployment.json", guard_path=path, network_instance_id=identity, transition_id=transition, build=False)
+    assert not chain.sent
+    assert not (tmp_path / "deployment.json").exists()
+
+
+@pytest.mark.parametrize("approval", [{"network_instance_id": NETWORK_INSTANCE}, {"transition_id": TRANSITION_ID}])
+def test_explicit_network_approval_cannot_bypass_v2_sql_guard(tmp_path, approval):
+    chain = Chain()
+    with pytest.raises(RuntimeError, match="version 2 SQL guard"):
+        chain.deploy(deployment_path=tmp_path / "deployment.json", build=False, **approval)
+    assert not chain.sent
+
+
+def test_clean_sql_cannot_replace_existing_legacy_metadata(tmp_path):
+    chain = Chain()
+    guard, legacy = tmp_path / "guard.json", tmp_path / "legacy.json"
+    atomic_json(guard, scoped_guard())
+    atomic_json(legacy, {"legacyDeploymentExists": True})
+    with pytest.raises(RuntimeError, match="archival transition"):
+        chain.deploy(deployment_path=tmp_path / "deployment.json", guard_path=guard, legacy_path=legacy, build=False)
+    assert not chain.sent
+
+
+def test_deployed_sql_instance_without_local_manifest_never_redeploys(deployment, tmp_path):
+    _, _, record = deployment
+    record = {**record, "networkInstanceId": NETWORK_INSTANCE}
+    guard = scoped_guard()
+    guard["activeNetwork"].update({"phase": "Deployed", "deployment": record})
+    path = tmp_path / "guard.json"
+    atomic_json(path, guard)
+    chain = Chain()
+    with pytest.raises(RuntimeError, match="already deployed"):
+        chain.deploy(deployment_path=tmp_path / "missing.json", guard_path=path, build=False)
+    assert not chain.sent
+
+
+def test_deployed_sql_binding_and_only_current_payment_history_are_verified(deployment, tmp_path):
+    chain, path, record = deployment
+    guard = scoped_guard()
+    guard["hasLocalPaymentHistory"] = True
+    guard["activeNetwork"].update({"networkInstanceId": record["networkInstanceId"], "phase": "Deployed", "deployment": record, "ordersAddresses": [{"tokenAddress": TOKEN, "paymentContractAddress": CONTRACT}], "confirmedPayments": sql_guard(chain)["confirmedPayments"]})
+    guard_path = tmp_path / "guard.json"
+    atomic_json(guard_path, guard)
+    assert chain.deploy(deployment_path=path, guard_path=guard_path, build=False) == record
+    guard["activeNetwork"]["deployment"] = {**record, "checkpointBlockHash": "0x" + "e" * 64}
+    atomic_json(guard_path, guard)
+    with pytest.raises(RuntimeError, match="SQL network binding"):
+        chain.deploy(deployment_path=path, guard_path=guard_path, build=False)
+    guard["activeNetwork"].update({"networkInstanceId": OTHER_INSTANCE, "deployment": {**record, "networkInstanceId": OTHER_INSTANCE}})
+    atomic_json(guard_path, guard)
+    with pytest.raises(RuntimeError, match="another SQL network instance"):
+        chain.deploy(deployment_path=path, guard_path=guard_path, build=False)
+    assert len(chain.sent) == 3
+
+
+def test_legacy_adoption_assigns_an_instance_identity_when_absent(deployment, tmp_path):
+    chain, _, record = deployment
+    legacy = {key: value for key, value in record.items() if key != "networkInstanceId"}
+    legacy_path = tmp_path / "legacy.json"
+    atomic_json(legacy_path, legacy)
+    adopted = chain.deploy(deployment_path=tmp_path / "adopted.json", legacy_path=legacy_path, build=False)
+    assert module.network_uuid(adopted["networkInstanceId"])
+
+
+@pytest.mark.parametrize("authorization", [{}, {"transitionId": TRANSITION_ID}, "malformed"])
+def test_clean_bootstrap_cannot_carry_unarchived_transition_authorization(tmp_path, authorization):
+    guard = scoped_guard()
+    guard["activeNetwork"]["authorization"] = authorization
+    path = tmp_path / "guard.json"
+    atomic_json(path, guard)
+    chain = Chain()
+    with pytest.raises(RuntimeError, match="archived evidence"):
+        chain.deploy(deployment_path=tmp_path / "deployment.json", guard_path=path, build=False)
+    assert not chain.sent
+
+
+def test_deployed_history_marker_cannot_silently_lose_all_current_anchors(deployment, tmp_path):
+    _, _, record = deployment
+    guard = scoped_guard()
+    guard["hasLocalPaymentHistory"] = True
+    guard["activeNetwork"].update({"networkInstanceId": record["networkInstanceId"], "phase": "Deployed", "deployment": record})
+    path = tmp_path / "guard.json"
+    atomic_json(path, guard)
+    chain = Chain()
+    with pytest.raises(RuntimeError, match="archived evidence"):
+        chain.deploy(deployment_path=tmp_path / "deployment.json", guard_path=path, build=False)
+    assert not chain.sent

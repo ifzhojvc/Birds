@@ -44,6 +44,7 @@ public sealed class UserSubscription
 
 public sealed class PaymentOrder
 {
+    public Guid? NetworkInstanceId { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public string OrderId { get; set; } = "";
     public string UserId { get; set; } = "";
@@ -65,6 +66,7 @@ public sealed class PaymentOrder
 
 public sealed class CryptoPayment
 {
+    public Guid? NetworkInstanceId { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid PaymentOrderId { get; set; }
     public string UserId { get; set; } = "";
@@ -119,4 +121,44 @@ public sealed class UsageRecord
     public string Status { get; set; } = "Reserved";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ReleasedAt { get; set; }
+}
+
+public sealed class LocalNetworkInstance
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public long ChainId { get; set; } = 31337;
+    public string Phase { get; set; } = "Planned";
+    public bool IsCurrent { get; set; }
+    public Guid? TransitionBatchId { get; set; }
+    public string? DeploymentJson { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class LocalTransitionBatch
+{
+    public Guid Id { get; set; }
+    public Guid LegacyNetworkInstanceId { get; set; }
+    public Guid TargetNetworkInstanceId { get; set; }
+    public string BackupSha256 { get; set; } = "";
+    public string SourceFingerprint { get; set; } = "";
+    public string ApprovalReference { get; set; } = "";
+    public string SourceProjectionJson { get; set; } = "";
+    public DateTimeOffset CutoffUtc { get; set; }
+    public DateTimeOffset PreparedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class LegacyEntitlementProvenance
+{
+    public Guid UserSubscriptionId { get; set; }
+    public Guid SourcePaymentId { get; set; }
+    public Guid LegacyNetworkInstanceId { get; set; }
+    public Guid TransitionBatchId { get; set; }
+    public string AccessSource { get; set; } = "LegacyLocalSnapshot";
+    public string Policy { get; set; } = "HonorExistingUntilOriginalEnd";
+    public DateTimeOffset OriginalStartDate { get; set; }
+    public DateTimeOffset OriginalEndDate { get; set; }
+    public int OriginalAnalysisLimit { get; set; }
+    public int OriginalAnalysesUsed { get; set; }
+    public string OriginalFeatures { get; set; } = "[]";
+    public DateTimeOffset RecordedAt { get; set; } = DateTimeOffset.UtcNow;
 }

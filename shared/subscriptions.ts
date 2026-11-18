@@ -29,6 +29,9 @@ export interface Entitlement {
   startDate: string;
   endDate: string;
   subscriptionId: string | null;
+  accessSource?: "Free" | "CurrentPayment" | "LegacyLocalSnapshot";
+  networkInstanceId?: string | null;
+  verificationState?: string;
 }
 export interface PaymentReadiness {
   ready: boolean;
@@ -37,6 +40,7 @@ export interface PaymentReadiness {
 }
 export interface Network {
   enabled: boolean;
+  networkInstanceId?: string | null;
   testMode: boolean;
   chainId: number;
   rpcUrl: string;
@@ -63,6 +67,9 @@ export interface PaymentOrder {
   createdAt: string;
   expiresAt: string;
   replaceCurrentPlan: boolean;
+  networkInstanceId?: string | null;
+  isHistorical?: boolean;
+  verificationState?: string;
 }
 export interface CryptoPayment {
   id: string;
@@ -82,6 +89,9 @@ export interface CryptoPayment {
   confirmedAt: string | null;
   explorerUrl: string | null;
   tokenDecimals: number;
+  networkInstanceId?: string | null;
+  isHistorical?: boolean;
+  verificationState?: string;
 }
 export interface SubscriptionPeriod {
   id: string;
@@ -128,3 +138,10 @@ export function formatToken(value: string, decimals = 6) {
 }
 export const shortAddress = (value: string) =>
   `${value.slice(0, 6)}…${value.slice(-4)}`;
+
+export const legacyAccessMessage = "Права збережено з історичної локальної оплати до початкової дати завершення. Попередня мережа недоступна для повторної перевірки.";
+export const historicalPaymentMessage = "Оплата з попередньої локальної мережі. У поточній мережі ця транзакція не підтверджувалася.";
+export function paymentStatusLabel(payment: Pick<CryptoPayment, "status" | "isHistorical" | "verificationState">) {
+  const label = paymentLabels[payment.status] || payment.status;
+  return payment.isHistorical || payment.verificationState === "ArchivedUnverified" ? `Історичний статус: ${label}` : label;
+}

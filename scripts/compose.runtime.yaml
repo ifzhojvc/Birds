@@ -1,0 +1,35 @@
+services:
+  sql:
+    environment:
+      MSSQL_MEMORY_LIMIT_MB: '1024'
+  migrate:
+    image: birds-central:latest
+    command: [--verify-schema]
+  ai:
+    image: birds-ai:latest
+    environment:
+      BIRD_OFFLINE: 'true'
+      HF_HUB_OFFLINE: '1'
+    volumes:
+      - ./.cache/huggingface:/app/.cache/huggingface:ro
+  worker:
+    image: birds-worker:latest
+    environment:
+      BIRD_OFFLINE: 'true'
+      HF_HUB_OFFLINE: '1'
+    volumes:
+      - ./.cache/huggingface:/app/.cache/huggingface:ro
+  central:
+    image: birds-central:latest
+    ports: !override
+      - '127.0.0.1:5100:5100'
+  blockchain-guard:
+    image: birds-central:latest
+  blockchain-bind:
+    image: birds-central:latest
+  blockchain-init:
+    image: birds-blockchain-init:latest
+volumes:
+  media:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-birds}_media

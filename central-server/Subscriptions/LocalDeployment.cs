@@ -6,6 +6,10 @@ namespace BirdLab.Api.Subscriptions;
 
 public sealed class LocalDeployment
 {
+    public Guid? TransitionId { get; set; }
+    public string? SourceBackupSha256 { get; set; }
+    public string? SourceFingerprint { get; set; }
+    public Guid NetworkInstanceId { get; set; }
     public int Version { get; set; }
     public bool TestOnly { get; set; }
     public long ChainId { get; set; }
@@ -37,7 +41,7 @@ public sealed class LocalDeployment
             var file = new FileInfo(config.LocalDeploymentPath);
             if (!file.Exists || file.Length > 32768) throw new IOException();
             var result = JsonSerializer.Deserialize<LocalDeployment>(File.ReadAllText(file.FullName), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new JsonException();
-            if (result.Version != 1 || !result.TestOnly || result.ChainId != 31337 || result.TokenDecimals != 6 || result.DeploymentBlockNumber < 1 || result.CheckpointBlockNumber < result.DeploymentBlockNumber || result.Plans is null || !result.Plans.ContainsKey(1) || !result.Plans.ContainsKey(2) || result.Plans.Values.Any(v => v <= 0) || !new[] { result.NetworkIdentityTransactionHash, result.NetworkIdentityData, result.TokenDeploymentTransactionHash, result.DeploymentTransactionHash, result.DeploymentBlockHash, result.CheckpointBlockHash, result.TokenRuntimeCodeHash, result.PaymentRuntimeCodeHash }.All(Hash)) throw new JsonException();
+            if (result.NetworkInstanceId == Guid.Empty || result.Version != 1 || !result.TestOnly || result.ChainId != 31337 || result.TokenDecimals != 6 || result.DeploymentBlockNumber < 1 || result.CheckpointBlockNumber < result.DeploymentBlockNumber || result.Plans is null || !result.Plans.ContainsKey(1) || !result.Plans.ContainsKey(2) || result.Plans.Values.Any(v => v <= 0) || !new[] { result.NetworkIdentityTransactionHash, result.NetworkIdentityData, result.TokenDeploymentTransactionHash, result.DeploymentTransactionHash, result.DeploymentBlockHash, result.CheckpointBlockHash, result.TokenRuntimeCodeHash, result.PaymentRuntimeCodeHash }.All(Hash)) throw new JsonException();
             _ = WalletService.Address(result.TokenAddress);
             _ = WalletService.Address(result.PaymentContractAddress);
             _ = WalletService.Address(result.OwnerAddress);
@@ -51,10 +55,10 @@ public sealed class LocalDeployment
 
     public BlockchainOptions Resolve(BlockchainOptions configured)
     {
-        if (configured.ChainId != ChainId || configured.TokenDecimals != TokenDecimals ||
+        if (configured.NetworkInstanceId.HasValue && configured.NetworkInstanceId != NetworkInstanceId || configured.ChainId != ChainId || configured.TokenDecimals != TokenDecimals ||
             (!string.IsNullOrEmpty(configured.TokenAddress) && !Same(configured.TokenAddress, TokenAddress)) ||
             (!string.IsNullOrEmpty(configured.PaymentContractAddress) && !Same(configured.PaymentContractAddress, PaymentContractAddress)))
             throw new ApiException(503, "Адреси або параметри Anvil не збігаються із серверною конфігурацією. Автоматичну оплату зупинено.", "configuration_mismatch");
-        return configured.WithContracts(TokenAddress, PaymentContractAddress);
+        return configured.WithContracts(TokenAddress, PaymentContractAddress, NetworkInstanceId);
     }
 }

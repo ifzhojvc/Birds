@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace BirdLab.Api.Subscriptions;
 
-public sealed record Entitlement(int PlanId, string Plan, string Status, int AnalysisLimit, int AnalysesUsed, int Remaining, string[] Features, DateTimeOffset StartDate, DateTimeOffset EndDate, Guid? SubscriptionId);
+public sealed record Entitlement(int PlanId, string Plan, string Status, int AnalysisLimit, int AnalysesUsed, int Remaining, string[] Features, DateTimeOffset StartDate, DateTimeOffset EndDate, Guid? SubscriptionId, string AccessSource = "CurrentPayment", Guid? NetworkInstanceId = null, string VerificationState = "Deployed");
 
 public sealed class SubscriptionService(BirdDbContext db)
 {
@@ -18,13 +18,18 @@ public sealed class SubscriptionService(BirdDbContext db)
         if (active is not null)
         {
             var name = await db.SubscriptionPlans.Where(p => p.Id == active.PlanId).Select(p => p.Name).SingleAsync(token);
-            return new(active.PlanId, name, "Active", active.AnalysisLimit, active.AnalysesUsed, Math.Max(0, active.AnalysisLimit - active.AnalysesUsed), Features(active.Features), active.StartDate, active.EndDate, active.Id);
+            var order = await db.PaymentOrders.AsNoTracking().SingleAsync(o => o.Id == active.PaymentOrderId, token);
+            var provenance = await db.LegacyEntitlementProvenances.AsNoTracking().SingleOrDefaultAsync(p => p.UserSubscriptionId == active.Id, token);
+            var verification = await LocalNetworkPolicy.VerificationStateAsync(db, order.ChainId, order.NetworkInstanceId, token);
+            if ((verification == "ArchivedUnverified" || provenance is not null) && (provenance is null || provenance.AccessSource != "LegacyLocalSnapshot" || provenance.Policy != "HonorExistingUntilOriginalEnd" || provenance.LegacyNetworkInstanceId != order.NetworkInstanceId || !await db.LocalTransitionBatches.AnyAsync(b => b.Id == provenance.TransitionBatchId && b.LegacyNetworkInstanceId == provenance.LegacyNetworkInstanceId, token) || !await db.CryptoPayments.AnyAsync(p => p.Id == provenance.SourcePaymentId && p.PaymentOrderId == active.PaymentOrderId && p.UserId == active.UserId && p.SubscriptionPlanId == active.PlanId && p.Status == "Confirmed" && p.ConfirmedAt != null && p.NetworkInstanceId == provenance.LegacyNetworkInstanceId, token) || active.StartDate != provenance.OriginalStartDate || active.EndDate != provenance.OriginalEndDate || active.AnalysisLimit != provenance.OriginalAnalysisLimit || active.Features != provenance.OriginalFeatures))
+                throw new ApiException(503, "Історичні права потребують перевірки узгодженого перенесення. Строк і ліміт автоматично не змінюються.", "legacy_entitlement_mismatch");
+            return new(active.PlanId, name, "Active", active.AnalysisLimit, active.AnalysesUsed, Math.Max(0, active.AnalysisLimit - active.AnalysesUsed), Features(active.Features), active.StartDate, active.EndDate, active.Id, provenance is null ? "CurrentPayment" : "LegacyLocalSnapshot", order.NetworkInstanceId, verification);
         }
         var free = await db.SubscriptionPlans.AsNoTracking().SingleAsync(p => p.Id == 0, token);
         var start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
         var end = start.AddDays(1);
         var used = await db.UsageRecords.CountAsync(u => u.UserId == userId && u.UserSubscriptionId == null && u.CreatedAt >= start && u.CreatedAt < end && u.Status != "Released", token);
-        return new(0, free.Name, "Free", free.AnalysisLimit, used, Math.Max(0, free.AnalysisLimit - used), free.IsActive ? Features(free.Features) : [], start, end, null);
+        return new(0, free.Name, "Free", free.AnalysisLimit, used, Math.Max(0, free.AnalysisLimit - used), free.IsActive ? Features(free.Features) : [], start, end, null, "Free", null, "NotApplicable");
     }
 
     public async Task RequireFeatureAsync(string userId, string feature, CancellationToken token)

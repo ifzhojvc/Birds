@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import UUID, uuid4
 
 import requests
 
@@ -29,6 +30,20 @@ def read_metadata(path):
     if not isinstance(value, dict):
         raise RuntimeError("Local blockchain metadata must be a JSON object.")
     return value
+
+
+def network_uuid(value):
+    try:
+        parsed = UUID(value)
+        if parsed.int == 0:
+            raise ValueError()
+        return str(parsed)
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError("The local network instance identity is missing or invalid.") from None
+
+
+def digest(value):
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdefABCDEF" for character in value)
 
 
 class Anvil:
@@ -137,6 +152,8 @@ class Anvil:
 
     def verify(self, record, *, legacy=False):
         self.require_local()
+        if not legacy:
+            network_uuid(record.get("networkInstanceId"))
         if record.get("chainId") != 31337 or record.get("tokenDecimals") != 6 or record.get("testOnly") is not True or not legacy and record.get("version") != 1:
             raise RuntimeError("Saved deployment metadata is incompatible with local payments.")
         token = self.address(record.get("tokenAddress"))
@@ -223,7 +240,76 @@ class Anvil:
             if self.block(number)["hash"].lower() != block_hash.lower() or not receipt or int(receipt.get("status", "0x0"), 16) != 1 or int(receipt.get("blockNumber", "0x0"), 16) != number or str(receipt.get("blockHash", "")).lower() != block_hash.lower() or str(receipt.get("to", "")).lower() != record["paymentContractAddress"].lower():
                 raise RuntimeError("A confirmed SQL payment is missing from this network. Restore the original Anvil state; initialization is blocked.")
 
-    def deploy(self, *, deployment_path=ROOT / "verification/local-deployment.json", legacy_path=None, guard_path=None, build=True):
+    @staticmethod
+    def guard_scope(guard, network_instance_id=None, transition_id=None):
+        if guard is None or guard.get("version", 1) == 1:
+            if guard is not None and "activeNetwork" in guard:
+                raise RuntimeError("A scoped SQL network requires guard version 2.")
+            if network_instance_id or transition_id:
+                raise RuntimeError("Explicit network transitions require an approved version 2 SQL guard.")
+            return None
+        if guard.get("version") != 2 or not isinstance(guard.get("hasLocalPaymentHistory"), bool):
+            raise RuntimeError("The SQL network guard version or history marker is invalid.")
+        active = guard.get("activeNetwork")
+        archives = guard.get("archivedNetworks")
+        if not isinstance(active, dict) or not isinstance(archives, list):
+            raise RuntimeError("The SQL network guard has no active network instance.")
+        identity = network_uuid(active.get("networkInstanceId"))
+        if network_instance_id and network_uuid(network_instance_id) != identity:
+            raise RuntimeError("The requested network instance differs from the approved SQL instance.")
+        if active.get("chainId") != 31337 or active.get("phase") not in {"Planned", "Deployed"}:
+            raise RuntimeError("The SQL network instance phase or chain is incompatible.")
+        orders, payments = active.get("ordersAddresses"), active.get("confirmedPayments")
+        if not isinstance(orders, list) or not isinstance(payments, list):
+            raise RuntimeError("The active SQL network history is malformed.")
+        if active["phase"] == "Planned" and (orders or payments or active.get("deployment")):
+            raise RuntimeError("A planned SQL network already contains payment evidence. Automatic deployment is forbidden.")
+        archived_ids = set()
+        for archive in archives:
+            if not isinstance(archive, dict) or archive.get("phase") != "ArchivedUnverified" or archive.get("chainId") != 31337:
+                raise RuntimeError("Archived network evidence is missing or incompatible.")
+            archived_id = network_uuid(archive.get("networkInstanceId"))
+            if archived_id == identity or archived_id in archived_ids:
+                raise RuntimeError("Archived and active network identities must remain distinct.")
+            archived_ids.add(archived_id)
+            archived_orders, archived_payments = archive.get("ordersAddresses"), archive.get("confirmedPayments")
+            if not isinstance(archived_orders, list) or not isinstance(archived_payments, list) or not archived_orders and not archived_payments:
+                raise RuntimeError("Archived network payment anchors must be retained.")
+        if not guard["hasLocalPaymentHistory"] and (archives or orders or payments):
+            raise RuntimeError("SQL history cannot be marked empty while network evidence exists.")
+        authorization = active.get("authorization")
+        if archives:
+            if not isinstance(authorization, dict) or authorization.get("legacyArchived") is not True or not digest(authorization.get("backupSha256")) or not digest(authorization.get("sourceFingerprint")):
+                raise RuntimeError("The SQL transition has no verified backup and archival authorization.")
+            approved_transition = network_uuid(authorization.get("transitionId"))
+            if transition_id and network_uuid(transition_id) != approved_transition:
+                raise RuntimeError("The requested transition differs from the approved SQL transition.")
+            if active["phase"] == "Planned" and (not network_instance_id or not transition_id):
+                raise RuntimeError("A legacy transition requires explicit matching network-instance-id and transition-id approval.")
+        elif authorization is not None or transition_id or guard["hasLocalPaymentHistory"] and (active["phase"] == "Planned" or not orders and not payments):
+            raise RuntimeError("Historical SQL payments require retained archived evidence and explicit transition approval.")
+        if active["phase"] == "Deployed":
+            if not isinstance(active.get("deployment"), dict):
+                raise RuntimeError("The deployed SQL network has no bound contract manifest.")
+            if network_uuid(active["deployment"].get("networkInstanceId")) != identity:
+                raise RuntimeError("The bound deployment belongs to a different SQL network instance.")
+        return active
+
+    def verify_scoped_history(self, record, guard, scope):
+        if scope is None:
+            self.verify_sql_history(record, guard)
+            return
+        if network_uuid(record.get("networkInstanceId")) != network_uuid(scope["networkInstanceId"]):
+            raise RuntimeError("Saved contracts belong to another SQL network instance. Automatic replacement is forbidden.")
+        bound = scope.get("deployment")
+        if bound:
+            keys = ("networkInstanceId", "tokenAddress", "paymentContractAddress", "ownerAddress", "tokenDeploymentTransactionHash", "deploymentTransactionHash", "deploymentBlockNumber", "deploymentBlockHash", "networkIdentityTransactionHash", "networkIdentityData", "checkpointBlockNumber", "checkpointBlockHash", "tokenRuntimeCodeHash", "paymentRuntimeCodeHash")
+            if any(str(bound.get(key)).lower() != str(record.get(key)).lower() for key in keys):
+                raise RuntimeError("The manifest differs from the deployed SQL network binding.")
+        current = {"hasLocalPaymentHistory": bool(scope["ordersAddresses"] or scope["confirmedPayments"]), "ordersAddresses": scope["ordersAddresses"], "confirmedPayments": scope["confirmedPayments"]}
+        self.verify_sql_history(record, current)
+
+    def deploy(self, *, deployment_path=ROOT / "verification/local-deployment.json", legacy_path=None, guard_path=None, build=True, network_instance_id=None, transition_id=None):
         deployment_path = Path(deployment_path)
         deployment_path.parent.mkdir(parents=True, exist_ok=True)
         lock = deployment_path.with_suffix(deployment_path.suffix + ".lock")
@@ -233,39 +319,46 @@ class Anvil:
             raise RuntimeError("Another or interrupted blockchain initializer owns the deployment lock. Inspect the original state before retrying.") from None
         os.close(descriptor)
         try:
-            return self.initialize(deployment_path=deployment_path, legacy_path=legacy_path, guard_path=guard_path, build=build)
+            return self.initialize(deployment_path=deployment_path, legacy_path=legacy_path, guard_path=guard_path, build=build, network_instance_id=network_instance_id, transition_id=transition_id)
         finally:
             lock.unlink()
 
-    def initialize(self, *, deployment_path=ROOT / "verification/local-deployment.json", legacy_path=None, guard_path=None, build=True):
+    def initialize(self, *, deployment_path=ROOT / "verification/local-deployment.json", legacy_path=None, guard_path=None, build=True, network_instance_id=None, transition_id=None):
+        guard = read_metadata(guard_path) if guard_path else None
+        scope = self.guard_scope(guard, network_instance_id, transition_id)
         self.wait_ready()
         if build:
             subprocess.run(["forge", "build", "--offline"], cwd=ROOT / "contracts", check=True, capture_output=True)
         deployment_path = Path(deployment_path)
-        guard = read_metadata(guard_path) if guard_path else None
         if deployment_path.exists():
             record = self.verify(read_metadata(deployment_path))
             if guard is not None:
-                self.verify_sql_history(record, guard)
+                self.verify_scoped_history(record, guard, scope)
             return record
+        if scope is not None and scope["phase"] != "Planned":
+            raise RuntimeError("The SQL network was already deployed, but its manifest is missing. Restore that network; redeployment is forbidden.")
         if legacy_path and Path(legacy_path).exists():
-            record = self.verify(read_metadata(legacy_path), legacy=True)
-            if guard is not None:
-                self.verify_sql_history(record, guard)
-            atomic_json(deployment_path, {"initializing": True, "chainId": 31337})
-            record = self.anchor_identity(record)
-            atomic_json(deployment_path, record)
-            return record
+            if scope is None:
+                record = self.verify(read_metadata(legacy_path), legacy=True)
+                if guard is not None:
+                    self.verify_sql_history(record, guard)
+                record["networkInstanceId"] = network_uuid(record["networkInstanceId"]) if record.get("networkInstanceId") else str(uuid4())
+                atomic_json(deployment_path, {"initializing": True, "chainId": 31337, "networkInstanceId": record["networkInstanceId"]})
+                record = self.anchor_identity(record)
+                atomic_json(deployment_path, record)
+                return record
+            if not guard["archivedNetworks"]:
+                raise RuntimeError("Legacy deployment metadata requires an approved archival transition; empty SQL history cannot replace it.")
         if int(self.rpc("eth_blockNumber"), 16) != 0:
             raise RuntimeError("Anvil already has history but no saved deployment. Automatic deployment is forbidden.")
-        if guard is not None:
-            if guard.get("hasLocalPaymentHistory") is not False:
-                raise RuntimeError("SQL contains local payment history or the SQL guard is invalid. Restore the original Anvil state; fresh deployment is forbidden.")
+        if guard is not None and scope is None and guard.get("hasLocalPaymentHistory") is not False:
+            raise RuntimeError("SQL contains local payment history or the SQL guard is invalid. Restore the original Anvil state; fresh deployment is forbidden.")
         accounts = self.rpc("eth_accounts")
         if not accounts or any(int(self.rpc("eth_getTransactionCount", [account, "latest"]), 16) for account in accounts):
             raise RuntimeError("Anvil accounts are not pristine. Automatic deployment is forbidden.")
+        identity = network_uuid(scope["networkInstanceId"]) if scope is not None else str(uuid4())
         owner = accounts[0]
-        atomic_json(deployment_path, {"initializing": True, "chainId": 31337})
+        atomic_json(deployment_path, {"initializing": True, "chainId": 31337, "networkInstanceId": identity})
         token_hash = self.send(owner, data=self.artifact("MockUSDC")["bytecode"]["object"])
         token = self.receipt(token_hash)["contractAddress"]
         bytecode = self.artifact("BirdLabSubscriptions")["bytecode"]["object"]
@@ -274,7 +367,9 @@ class Anvil:
         contract = self.receipt(deploy_hash)["contractAddress"]
         for plan, price in PLANS.items():
             self.call(owner, contract, "setPlanPrice(uint256,uint256)", plan, price)
-        record = {"chainId": 31337, "rpcUrl": self.url, "tokenAddress": token, "paymentContractAddress": contract, "ownerAddress": owner, "tokenDecimals": 6, "deploymentTransactionHash": deploy_hash, "tokenDeploymentTransactionHash": token_hash, "testOnly": True}
+        record = {"networkInstanceId": identity, "chainId": 31337, "rpcUrl": self.url, "tokenAddress": token, "paymentContractAddress": contract, "ownerAddress": owner, "tokenDecimals": 6, "deploymentTransactionHash": deploy_hash, "tokenDeploymentTransactionHash": token_hash, "testOnly": True}
+        if scope is not None and scope.get("authorization"):
+            record.update({"transitionId": scope["authorization"]["transitionId"], "sourceBackupSha256": scope["authorization"]["backupSha256"], "sourceFingerprint": scope["authorization"]["sourceFingerprint"]})
         result = self.anchor_identity(self.verify(record, legacy=True))
         atomic_json(deployment_path, result)
         return result
@@ -286,12 +381,14 @@ def main(argv=None):
     parser.add_argument("--deployment", type=Path, default=ROOT / "verification/local-deployment.json")
     parser.add_argument("--legacy", type=Path)
     parser.add_argument("--guard", type=Path)
+    parser.add_argument("--network-instance-id")
+    parser.add_argument("--transition-id")
     parser.add_argument("--docker-network", action="store_true")
     parser.add_argument("--no-build", action="store_true")
     args = parser.parse_args(argv)
     try:
-        result = Anvil(args.rpc, allow_internal=args.docker_network).deploy(deployment_path=args.deployment, legacy_path=args.legacy, guard_path=args.guard, build=not args.no_build)
-        print(json.dumps({"ready": True, "chainId": result["chainId"], "tokenAddress": result["tokenAddress"], "paymentContractAddress": result["paymentContractAddress"]}))
+        result = Anvil(args.rpc, allow_internal=args.docker_network).deploy(deployment_path=args.deployment, legacy_path=args.legacy, guard_path=args.guard, build=not args.no_build, network_instance_id=args.network_instance_id, transition_id=args.transition_id)
+        print(json.dumps({"ready": True, "networkInstanceId": result.get("networkInstanceId"), "chainId": result["chainId"], "tokenAddress": result["tokenAddress"], "paymentContractAddress": result["paymentContractAddress"]}))
         return 0
     except (ValueError, KeyError, TypeError, RuntimeError, OSError, subprocess.SubprocessError, requests.RequestException) as error:
         print(json.dumps({"ready": False, "error": str(error) if isinstance(error, RuntimeError) else "Local blockchain initialization failed; inspect deployment metadata, RPC availability and contract build artifacts."}))

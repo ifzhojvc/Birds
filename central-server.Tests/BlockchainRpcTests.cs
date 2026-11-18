@@ -128,7 +128,7 @@ public sealed partial class BlockchainRpcTests
         var other = "0x4444444444444444444444444444444444444444";
         var order = new PaymentOrder
         {
-            OrderId = wallet + new string('a', 24), WalletAddress = wallet, PlanId = 1, Amount = 5_000_000,
+            NetworkInstanceId = config.NetworkInstanceId, OrderId = wallet + new string('a', 24), WalletAddress = wallet, PlanId = 1, Amount = 5_000_000,
             ChainId = scenario == "configured-chain" ? 1 : config.ChainId,
             TokenContractAddress = scenario == "configured-token" ? other : config.TokenAddress,
             PaymentContractAddress = scenario == "configured-contract" ? other : config.PaymentContractAddress,

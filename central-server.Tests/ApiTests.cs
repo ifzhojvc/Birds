@@ -91,7 +91,7 @@ public sealed class FileAndCsvTests
     public void MigrationSnapshotMatchesCurrentModel()
     {
         using var db = new BirdDbContext(new DbContextOptionsBuilder<BirdDbContext>().UseSqlServer("Server=unused;Database=unused;Integrated Security=true").Options);
-        Assert.Equal(3, db.Database.GetMigrations().Count());
+        Assert.Equal(4, db.Database.GetMigrations().Count());
         Assert.False(db.Database.HasPendingModelChanges());
         var sql = db.Database.GenerateCreateScript();
         Assert.Contains("CK_Analysis_Confidence", sql);

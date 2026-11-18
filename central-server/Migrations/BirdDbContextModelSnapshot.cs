@@ -354,6 +354,9 @@ namespace BirdLab.Api.Migrations
                     b.Property<int?>("LogIndex")
                         .HasColumnType("int");
 
+                    b.Property<Guid?>("NetworkInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTimeOffset>("NextCheckAt")
                         .HasColumnType("datetimeoffset");
 
@@ -408,7 +411,11 @@ namespace BirdLab.Api.Migrations
 
                     b.HasIndex("ChainId", "TransactionHash", "LogIndex")
                         .IsUnique()
-                        .HasFilter("[LogIndex] IS NOT NULL");
+                        .HasFilter("[LogIndex] IS NOT NULL AND [ChainId] <> 31337");
+
+                    b.HasIndex("NetworkInstanceId", "TransactionHash", "LogIndex")
+                        .IsUnique()
+                        .HasFilter("[LogIndex] IS NOT NULL AND [NetworkInstanceId] IS NOT NULL");
 
                     b.ToTable("CryptoPayments");
                 });
@@ -471,6 +478,143 @@ namespace BirdLab.Api.Migrations
                     b.HasIndex("AnalysisId");
 
                     b.ToTable("InboxMessages");
+                });
+
+            modelBuilder.Entity("BirdLab.Api.Models.LegacyEntitlementProvenance", b =>
+                {
+                    b.Property<Guid>("UserSubscriptionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AccessSource")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("LegacyNetworkInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("OriginalAnalysesUsed")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OriginalAnalysisLimit")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("OriginalEndDate")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("OriginalFeatures")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("OriginalStartDate")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Policy")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("SourcePaymentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TransitionBatchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("UserSubscriptionId");
+
+                    b.HasIndex("LegacyNetworkInstanceId");
+
+                    b.HasIndex("SourcePaymentId");
+
+                    b.HasIndex("TransitionBatchId");
+
+                    b.ToTable("LegacyEntitlementProvenances");
+                });
+
+            modelBuilder.Entity("BirdLab.Api.Models.LocalNetworkInstance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("ChainId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DeploymentJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)");
+
+                    b.Property<Guid?>("TransitionBatchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChainId")
+                        .IsUnique()
+                        .HasFilter("[IsCurrent] = 1");
+
+                    b.HasIndex("TransitionBatchId");
+
+                    b.ToTable("LocalNetworkInstances", t =>
+                        {
+                            t.HasCheckConstraint("CK_LocalNetwork_State", "[ChainId] = 31337 AND [Phase] IN ('ArchivedUnverified','Planned','Deployed') AND (([Phase] = 'ArchivedUnverified' AND [IsCurrent] = 0) OR ([Phase] IN ('Planned','Deployed') AND [IsCurrent] = 1))");
+                        });
+                });
+
+            modelBuilder.Entity("BirdLab.Api.Models.LocalTransitionBatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ApprovalReference")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("BackupSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset>("CutoffUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("LegacyNetworkInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("PreparedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("SourceProjectionJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("TargetNetworkInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TargetNetworkInstanceId")
+                        .IsUnique();
+
+                    b.ToTable("LocalTransitionBatches");
                 });
 
             modelBuilder.Entity("BirdLab.Api.Models.OutboxMessage", b =>
@@ -540,6 +684,9 @@ namespace BirdLab.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<Guid?>("NetworkInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("OrderId")
                         .IsRequired()
                         .HasMaxLength(66)
@@ -579,6 +726,8 @@ namespace BirdLab.Api.Migrations
                         .HasColumnType("nvarchar(42)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("NetworkInstanceId");
 
                     b.HasIndex("OrderId")
                         .IsUnique();
@@ -1044,6 +1193,11 @@ namespace BirdLab.Api.Migrations
 
             modelBuilder.Entity("BirdLab.Api.Models.CryptoPayment", b =>
                 {
+                    b.HasOne("BirdLab.Api.Models.LocalNetworkInstance", null)
+                        .WithMany()
+                        .HasForeignKey("NetworkInstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("BirdLab.Api.Models.PaymentOrder", null)
                         .WithMany()
                         .HasForeignKey("PaymentOrderId")
@@ -1062,8 +1216,48 @@ namespace BirdLab.Api.Migrations
                     b.Navigation("Analysis");
                 });
 
+            modelBuilder.Entity("BirdLab.Api.Models.LegacyEntitlementProvenance", b =>
+                {
+                    b.HasOne("BirdLab.Api.Models.LocalNetworkInstance", null)
+                        .WithMany()
+                        .HasForeignKey("LegacyNetworkInstanceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("BirdLab.Api.Models.CryptoPayment", null)
+                        .WithMany()
+                        .HasForeignKey("SourcePaymentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("BirdLab.Api.Models.LocalTransitionBatch", null)
+                        .WithMany()
+                        .HasForeignKey("TransitionBatchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("BirdLab.Api.Models.UserSubscription", null)
+                        .WithOne()
+                        .HasForeignKey("BirdLab.Api.Models.LegacyEntitlementProvenance", "UserSubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("BirdLab.Api.Models.LocalNetworkInstance", b =>
+                {
+                    b.HasOne("BirdLab.Api.Models.LocalTransitionBatch", null)
+                        .WithMany()
+                        .HasForeignKey("TransitionBatchId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("BirdLab.Api.Models.PaymentOrder", b =>
                 {
+                    b.HasOne("BirdLab.Api.Models.LocalNetworkInstance", null)
+                        .WithMany()
+                        .HasForeignKey("NetworkInstanceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("BirdLab.Api.Models.SubscriptionPlan", null)
                         .WithMany()
                         .HasForeignKey("PlanId")
